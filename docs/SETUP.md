@@ -8,28 +8,20 @@ Throughout this guide, replace `YOUR-USERNAME` with your GitHub username.
 
 ## Step 1. Put the app on GitHub
 
-**Option A: command line** (from the `docsync` folder)
+The app repo is **public** (it only holds code; free GitHub Pages needs a public repo). Your documents go in a separate **private** repo in step 3.
+
+The owner's copy already lives at `https://github.com/GermanyMayank/a-really-helphul-tool`. To make your own, fork it, or:
 
 ```bash
-# create the public repo on github.com first: New repository -> name "docsync" -> Public -> no README
-git remote add origin https://github.com/YOUR-USERNAME/docsync.git
-git branch -M main
-git push -u origin main
+gh repo create my-helpful-tool --public --source=. --push
 ```
-
-**Option B: GitHub CLI**
-
-```bash
-gh repo create docsync --public --source=. --push
-```
-
-**Option C: no git at all.** On github.com create the `docsync` repo, click *Add file > Upload files* and drag in everything from this folder (keep the `assets` and `docs` folders).
 
 ## Step 2. Turn on GitHub Pages
 
-1. Open `https://github.com/YOUR-USERNAME/docsync` > **Settings** > **Pages**.
-2. *Source*: **Deploy from a branch**. *Branch*: **main**, folder **/ (root)**. Save.
-3. Wait about a minute. The app is at `https://YOUR-USERNAME.github.io/docsync/`.
+1. Open the repo > **Settings** > **Pages**.
+2. *Source*: **GitHub Actions**. (Not "Deploy from a branch": the workflow tests the app first and only deploys when everything passes.)
+3. Open the **Actions** tab and wait for "Test and deploy" to turn green (about 2 minutes). If it ran before you changed the setting, click it and **Re-run all jobs**.
+4. The app is at `https://YOUR-USERNAME.github.io/REPO-NAME/`, for the owner: `https://germanymayank.github.io/a-really-helphul-tool/`.
 
 It will say "This site is not set up yet". That's expected.
 
@@ -54,21 +46,21 @@ This token lets the app read and write files in the vault, and nothing else.
 
 ## Step 5. Generate your config
 
-1. Open `https://YOUR-USERNAME.github.io/docsync/setup.html`
+1. Open `https://YOUR-USERNAME.github.io/REPO-NAME/setup.html`
 2. Fill in your username, `docsync-vault`, the token, and choose a password.
    - Use at least 10 characters. A short sentence is easy to type on a phone and hard to guess.
 3. Click **Test token and generate config**, then **Copy**.
 
 ## Step 6. Save the config
 
-1. Open `https://github.com/YOUR-USERNAME/docsync/blob/main/config.js`
+1. Open `https://github.com/YOUR-USERNAME/REPO-NAME/blob/main/config.js`
 2. Click the pencil icon (Edit).
 3. Select everything, paste the copied config, **Commit changes**.
-4. Wait about a minute for Pages to redeploy.
+4. The commit starts the "Test and deploy" workflow. After about 2 minutes (green tick in the Actions tab) the site is updated.
 
 ## Step 7. Use it
 
-Open `https://YOUR-USERNAME.github.io/docsync/` on any device, enter your password, done.
+Open `https://YOUR-USERNAME.github.io/REPO-NAME/` on any device, enter your password, done.
 
 Tip for phones: use the browser's **Add to Home Screen** for one-tap access.
 - iPhone (Safari): Share button > Add to Home Screen

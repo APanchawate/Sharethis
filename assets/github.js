@@ -54,7 +54,13 @@ export class Vault {
     if (!res.ok) {
       let msg = res.statusText;
       try { msg = (await res.json()).message || msg; } catch { /* not json */ }
-      throw new GitHubError(res.status, msg);
+      const err = new GitHubError(res.status, msg);
+      // 403/429 with no requests left = rate limited, not a permission problem
+      if ((res.status === 403 || res.status === 429) && res.headers.get("x-ratelimit-remaining") === "0") {
+        err.rateLimited = true;
+        err.resetAt = Number(res.headers.get("x-ratelimit-reset")) * 1000 || null;
+      }
+      throw err;
     }
     return res;
   }
@@ -63,6 +69,7 @@ export class Vault {
   async check() {
     const repo = await (await this.request(this.repoUrl)).json();
     this.branch = repo.default_branch || "main";
+    this.isPrivate = repo.private;
   }
 
   /** List documents: [{name, path, sha, size}] sorted by name. */

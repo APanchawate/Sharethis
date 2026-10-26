@@ -14,6 +14,12 @@ const SHOTS = new URL("./screenshots/", import.meta.url).pathname;
 mkdirSync(SHOTS, { recursive: true });
 
 const assert = (cond, msg) => { if (!cond) throw new Error("FAIL: " + msg); console.log("ok -", msg); };
+// Any Content-Security-Policy violation or page error fails the run at the end
+const problems = [];
+const watch = (p) => {
+  p.on("pageerror", (e) => problems.push("page error: " + e.message));
+  p.on("console", (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) problems.push("CSP: " + m.text()); });
+};
 
 // ---------------------------------------------------------------- unit checks
 assert(org.categorize("Arbeitszeugnis_attocube.pdf").id === "work", "categorize: longest keyword wins (Arbeitszeugnis -> Work)");
@@ -50,6 +56,7 @@ seed("passport-scan.png", PNG, "Upload passport-scan.png [iPhone, share]", daysA
 const SEEDED = new Map([...vault].map(([p, f]) => [p, f.buf]));
 
 let stateWrites = 0;
+let publicVault = false;
 async function mockGitHub(context) {
   await context.route("https://api.github.com/**", async (route) => {
     const req = route.request();
@@ -62,7 +69,7 @@ async function mockGitHub(context) {
     const base = `/repos/${OWNER}/${REPO}`;
     const m = req.method();
     const sub = url.pathname.slice(base.length);
-    if (sub === "") return json(200, { name: REPO, private: true, default_branch: "main" });
+    if (sub === "") return json(200, { name: REPO, private: !publicVault, default_branch: "main" });
 
     // ----- commits list
     if (sub === "/commits") {
@@ -144,7 +151,7 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext();
 await mockGitHub(ctx);
 const page = await ctx.newPage();
-page.on("pageerror", (e) => console.error("PAGE ERROR", e));
+watch(page);
 await page.goto(`${BASE}/setup.html`);
 await page.fill("#owner", OWNER);
 await page.fill("#token", "wrong");
@@ -154,6 +161,18 @@ await page.click("#go");
 await page.waitForFunction(() => document.getElementById("err").textContent.length > 0);
 assert(/not valid/.test(await page.textContent("#err")), "setup rejects a bad token");
 await page.fill("#token", TOKEN);
+publicVault = true;
+await page.click("#go");
+await page.waitForFunction(() => /is public/.test(document.getElementById("err").textContent), null, { timeout: 15000 });
+assert(true, "setup refuses a PUBLIC vault repo");
+publicVault = false;
+await page.fill("#pw", "password123");
+await page.fill("#pw2", "password123");
+await page.click("#go");
+await page.waitForFunction(() => /stronger password/.test(document.getElementById("err").textContent));
+assert(true, "setup refuses a weak password");
+await page.fill("#pw", "blue tram to Karlsfeld 42");
+await page.fill("#pw2", "blue tram to Karlsfeld 42");
 await page.click("#go");
 await page.waitForSelector("#result:not([hidden])", { timeout: 30000 });
 const configText = await page.inputValue("#out");
@@ -175,9 +194,9 @@ for (const [label, opts, device] of [
   const c = await browser.newContext({ ...opts, acceptDownloads: true });
   await c.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE }).catch(() => {});
   await mockGitHub(c);
-  await c.route(`${BASE}/config.js`, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: configText }));
+  await c.route(`${BASE}/config.js*`, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: configText }));
   const p = await c.newPage();
-  p.on("pageerror", (e) => console.error("PAGE ERROR", e));
+  watch(p);
   await p.goto(BASE + "/");
   await p.waitForSelector("#lock:not([hidden])");
   assert((await p.title()) === "a really helpful tool", `${label}: app is called "a really helpful tool"`);
@@ -328,4 +347,5 @@ for (const [label, opts, device] of [
 }
 
 await browser.close();
+assert(problems.length === 0, `no CSP violations or page errors${problems.length ? ":\n  " + problems.join("\n  ") : ""}`);
 console.log("\nAll tests passed.");

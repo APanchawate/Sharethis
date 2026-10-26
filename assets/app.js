@@ -695,6 +695,10 @@ function handleError(err) {
 
 function friendlyError(err) {
   if (err.message === "Wrong password") return "Wrong password.";
+  if (err.rateLimited) {
+    const mins = err.resetAt ? Math.max(1, Math.ceil((err.resetAt - Date.now()) / 60000)) : null;
+    return `GitHub's hourly limit is reached. Try again${mins ? ` in ${mins} min` : " later"}.`;
+  }
   switch (err.status) {
     case 401: return "Token not valid (expired or revoked).";
     case 403: return "Access denied. Check the token has Contents read/write on the vault repo.";
@@ -735,6 +739,16 @@ function formatSize(b) {
   if (b < 1024 ** 2) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / 1024 ** 2).toFixed(1)} MB`;
 }
+
+// Offline notice + a safety net so no error ever fails silently
+const syncOnline = () => ($("offline").hidden = navigator.onLine);
+window.addEventListener("online", () => { syncOnline(); if (vault) loadFiles({ quiet: true }); });
+window.addEventListener("offline", syncOnline);
+syncOnline();
+window.addEventListener("unhandledrejection", (e) => {
+  console.error(e.reason);
+  if (vault) toast(friendlyError(e.reason || {}), true);
+});
 
 // ---------------------------------------------------------------------------
 // Start

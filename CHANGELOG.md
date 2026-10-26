@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 (2026-10-26) - production release
+
+- Strict Content Security Policy on every page; setup page logic moved to `assets/setup.js` (no inline code)
+- Setup refuses a public vault repo and weak passwords; fills in the GitHub username automatically
+- Friendly messages for GitHub rate limits and offline mode; global error safety net
+- GitHub Actions: browser tests on every push and PR, deploy to Pages only when green
+- `scripts/build-site.sh`: deploys only app files, cache-busts every script so phones never mix versions
+- Tests run against the exact deployed build and fail on any CSP violation
+- Pinned dev dependency + lockfile, Dependabot, `.editorconfig`, `.gitattributes`
+- Repo polish: banner, screenshots, badges, SECURITY.md, CONTRIBUTING.md, issue and PR templates
+
 ## 1.2.0 (2026-10-26)
 
 - Renamed to "a really helpful tool"; subtle Saurashtra / Kathiyawad design (bandhani strip, kumkum + haldi accents, new icon)

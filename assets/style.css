@@ -61,12 +61,12 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 /* ---------- Lock screen ---------- */
 .lock { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
 .lock-card { width: 100%; max-width: 360px; text-align: center; }
-.lock-mark { position: relative; width: 64px; height: 64px; margin: 0 auto 22px; }
+.lock-mark { position: relative; isolation: isolate; width: 64px; height: 64px; margin: 0 auto 22px; }
 /* a faint ring of bandhani dots around the logo */
 .lock-mark::before {
   content: ""; position: absolute; inset: -34px; border-radius: 50%; z-index: -1;
   background-image: radial-gradient(circle, var(--kumkum) 1.3px, transparent 1.8px);
-  background-size: 9px 9px; opacity: .16;
+  background-size: 9px 9px; opacity: .22;
   -webkit-mask: radial-gradient(circle, transparent 38px, #000 40px, #000 64px, transparent 66px);
           mask: radial-gradient(circle, transparent 38px, #000 40px, #000 64px, transparent 66px);
 }
@@ -241,3 +241,24 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 }
 .toast-action { background: none; border: 0; padding: 0; color: var(--haldi); font: 600 14px var(--font); cursor: pointer; white-space: nowrap; }
 .toast.err { background: var(--danger); }
+
+/* ---------- Setup page (setup.html) ---------- */
+.bandhani-top { position: static; }
+.setup { max-width: 560px; margin: 0 auto; padding: 32px 16px 64px; }
+.setup h1 { font-size: 24px; margin-bottom: 4px; }
+.setup label { display: block; font-size: 14px; font-weight: 500; margin: 18px 0 6px; }
+.setup .help { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+.setup a { color: inherit; }
+.setup-go { margin-top: 24px; }
+.note { background: var(--subtle); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-top: 16px; }
+textarea.input { height: 260px; padding: 12px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; resize: vertical; }
+.result { margin-top: 28px; }
+.result h2 { font-size: 18px; }
+.result .row-end { margin-top: 10px; }
+
+/* ---------- Offline notice ---------- */
+.offline { background: var(--subtle); color: var(--muted); text-align: center; font-size: 13px; padding: 6px 16px; border-bottom: 1px solid var(--border); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

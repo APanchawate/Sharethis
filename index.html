@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- Strict CSP: only our own files, and network access only to the GitHub API -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; frame-src blob:; connect-src https://api.github.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="referrer" content="no-referrer" />
   <meta name="theme-color" content="#ffffff" />
   <meta name="robots" content="noindex" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -46,6 +49,7 @@
     </header>
     <!-- bandhani border (Jamnagar tie-dye dots), purely decorative -->
     <div class="bandhani" aria-hidden="true"></div>
+    <div class="offline" id="offline" hidden>You're offline. Files you opened before still work.</div>
 
     <main class="container">
       <!-- Upload: button, drop files anywhere, or paste -->

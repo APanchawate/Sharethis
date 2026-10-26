@@ -1,120 +1,123 @@
-# a really helpful tool
+<p align="center">
+  <img src="docs/images/banner.svg" alt="a really helpful tool" width="100%" />
+</p>
 
-A tiny, private document locker that lives entirely on GitHub.
+<p align="center">
+  <a href="https://github.com/GermanyMayank/a-really-helphul-tool/actions/workflows/ci.yml"><img alt="Tests" src="https://github.com/GermanyMayank/a-really-helphul-tool/actions/workflows/ci.yml/badge.svg" /></a>
+  <img alt="No build step" src="https://img.shields.io/badge/build_step-none-a3201b" />
+  <img alt="Runtime dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-a3201b" />
+  <img alt="Hosting" src="https://img.shields.io/badge/hosting-GitHub_Pages-1c1414" />
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-e3a21a" /></a>
+</p>
 
-Open one link on any device (Android, iPhone, Mac, Windows, Linux), type your password once, and your documents are there: upload, preview, favourite, rename, copy, send, download, delete. Everything syncs to every other device.
+<p align="center">
+  <b><a href="https://germanymayank.github.io/a-really-helphul-tool/">Open the app</a></b>
+  &nbsp;·&nbsp; <a href="docs/SETUP.md">Set it up</a>
+  &nbsp;·&nbsp; <a href="docs/ARCHITECTURE.md">How it works</a>
+  &nbsp;·&nbsp; <a href="docs/AI_HANDOFF.md">Continue with another AI</a>
+</p>
 
-- **No server, no database, no monthly cost.** The website is hosted free on GitHub Pages. Your files live in a private GitHub repo.
-- **No build step.** Plain HTML, CSS and JavaScript. Edit a file, push, done.
-- **Private.** The link is public, but nothing is visible until you unlock it with your password.
-- **Nothing is ever really lost.** Every change is a git commit, and deletes can be undone.
+---
 
-The look is clean white with small touches from Saurashtra / Kathiyawad: a bandhani (Jamnagar tie-dye) dot strip, kumkum red and haldi yellow accents.
+A private document locker that lives entirely on GitHub. Open one link on your phone or laptop, type your password once, and your passport scan, CV, contracts and certificates are there: upload, preview, favourite, rename, copy, send, download. Everything syncs to every other device.
 
-## How it works
+No server. No database. No monthly bill. No build step.
 
-```
- Your phone / laptop                       GitHub
- ┌──────────────────────┐   HTTPS + token   ┌──────────────────────────────┐
- │  the web app         │ ────────────────▶ │  docsync-vault (PRIVATE)     │
- │  (served by GitHub   │   REST API        │   files/CV.pdf               │
- │   Pages from the     │ ◀──────────────── │   files/passport.jpg  ...    │
- │   docsync repo)      │                   │   .app/state.json (favs)     │
- └──────────────────────┘                   └──────────────────────────────┘
-        ▲
-        │ password unlocks an AES-256 encrypted token stored in config.js
-```
+<p align="center">
+  <img src="docs/images/desktop.png" alt="The document list on a laptop" width="88%" />
+</p>
 
-Two repos (the names are only defaults, any names work):
+<p align="center">
+  <img src="docs/images/phone-lock.png" alt="Lock screen on a phone" width="27%" />
+  &nbsp;
+  <img src="docs/images/phone-list.png" alt="Document list on a phone" width="27%" />
+  &nbsp;
+  <img src="docs/images/phone-menu.png" alt="Actions menu on a phone" width="27%" />
+</p>
 
-| Repo | Visibility | What's in it |
-|---|---|---|
-| `docsync` | Public | This code. GitHub Pages serves it as the website. |
-| `docsync-vault` | **Private** | Your documents in `files/`, favourites in `.app/state.json`. |
+## What it does
 
-## Quick start
+| | |
+|---|---|
+| **Upload from anywhere** | Big upload button on phones, drag and drop anywhere on a laptop, or paste a screenshot with Ctrl+V. Exact duplicates are spotted and skipped. |
+| **Sorts itself** | Files land in ID & Visa, Work, Education, Money, Home, Photos or Other, by reading the file name in English and German (*Aufenthaltstitel*, *Mietvertrag*, *Lebenslauf*...). |
+| **Finds anything** | Search forgives typos (`pasport`), knows file types (`pdf`, `photo`), devices (`iphone`), categories (`visa`) and dates (`march`, `week`). |
+| **Favourites** | Heart a file and it stays at the top, on every device. |
+| **Opens instantly** | Tap a PDF, image or text file and it previews at once. Files are cached on the device and start downloading the moment your finger touches them. |
+| **Hands files over** | Copy images and text to the clipboard, or send the real file to WhatsApp, Mail or AirDrop with the phone's share sheet. |
+| **Forgiving** | Rename in one tap. Deleted by mistake? Undo. Every change is a git commit, so nothing is ever truly lost. |
+| **Shows where files came from** | Each file shows the device it was uploaded from and when. |
 
-Full click-by-click guide: **[docs/SETUP.md](docs/SETUP.md)** (about 10 minutes).
-
-1. Push this folder to a public repo and turn on GitHub Pages.
-2. Create an empty **private** repo for the documents (e.g. `docsync-vault`).
-3. Create a fine-grained token with access to only that repo, permission *Contents: Read and write*.
-4. Open `https://<you>.github.io/<repo>/setup.html`, enter the token and pick a password, copy the generated config.
-5. Paste it into `config.js`, commit. Open the site on any device.
-
-## Features
-
-**Getting files in**
-- Big "Upload documents" button (file picker, photo library or Files app on phones)
-- Drag and drop anywhere on the page, or paste (Ctrl+V / Cmd+V) a screenshot or copied files
-- Exact duplicates are detected and skipped ("Already saved as Passport.png"); same name with different content is saved as `name (2).pdf`
-
-**Finding them**
-- Auto-organised into categories from the file name (English + German): ID & Visa, Work, Education, Money, Home, Photos, Other
-- **Favourites** (heart): pinned to the top, own filter, synced across devices
-- Smart search: any word order, forgives typos ("pasport"), understands types ("pdf", "photo"), devices ("iphone"), categories ("visa"), months and "today / week / month"
-- Sort by newest, oldest, name or size
-- Each file shows where it came from: device, date, size
-
-**Using them**
-- Tap a file: instant preview if the browser can show it (PDF, images, text). Other types open the actions menu instead.
-- Previews are cached on the device and prefetched when your finger or mouse lands on a row, so opening is near-instant; favourites are warmed in the background
-- Copy to clipboard (images and text; browsers don't allow PDFs/Word on the clipboard)
-- Send to an app: the phone's own share sheet (WhatsApp, Mail, AirDrop...) with the real file
-- Rename (one commit, keeps origin and favourite), download, delete with **Undo**
-- Lock button: forgets the token and wipes every cached copy from that device
-
-Limits: 25 MB per file (configurable up to ~50 MB), about 1 GB total recommended for a GitHub repo.
-
-## Project structure
+## How it stays private
 
 ```
-├── index.html            The app (lock screen, list, menu, modals)
-├── setup.html            One-time setup tool: encrypts your token, outputs config.js
-├── config.js             Your settings (the only file you edit)
-├── manifest.webmanifest  "Add to Home Screen" / install as app
+ Phone / laptop                          GitHub
+ ┌─────────────────────┐   HTTPS + key    ┌──────────────────────────────┐
+ │ this app            │ ───────────────▶ │ your vault repo  (PRIVATE)   │
+ │ (GitHub Pages,      │                  │   files/Passport.pdf         │
+ │  public code only)  │ ◀─────────────── │   files/CV.pdf  ...          │
+ └─────────────────────┘                  └──────────────────────────────┘
+          ▲
+          └── your password unlocks the access key, which is stored
+              AES-256 encrypted in config.js
+```
+
+- The **code** in this repo is public. Your **documents** live in a separate **private** repo that only your key can open.
+- The key is a fine-grained GitHub token limited to that one repo. It is stored encrypted (PBKDF2 with 600,000 rounds + AES-256-GCM); without your password it is useless.
+- A strict Content Security Policy blocks every script and connection except this site and `api.github.com`. No trackers, no CDNs, no third-party code.
+- The lock button wipes the key and every cached file from that device.
+
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · Reporting a problem: [SECURITY.md](SECURITY.md)
+
+## Set it up (about 10 minutes)
+
+1. Fork or copy this repo. Under **Settings > Pages**, set **Source** to **GitHub Actions**.
+2. Create a **private** repo for your documents, e.g. `docsync-vault`.
+3. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) with access to only that repo and **Contents: Read and write**.
+4. Open `https://<you>.github.io/<this-repo>/setup.html`, enter the token, choose a password, copy the result into `config.js` and commit.
+5. Open the app on any device and unlock.
+
+Every step, click by click: **[docs/SETUP.md](docs/SETUP.md)**
+
+## For developers
+
+Plain HTML, CSS and JavaScript modules. Read `assets/app.js` top to bottom and you know the app.
+
+```
+├── index.html            the app
+├── setup.html            one-time setup: encrypts your token into config.js
+├── config.js             the only file a user edits
 ├── assets/
-│   ├── app.js            UI logic, numbered sections 1-7
-│   ├── github.js         The only code that talks to GitHub (Contents + Git Data API)
-│   ├── organize.js       Categories, smart search, sorting, device names, preview support (pure functions)
-│   ├── meta.js           Each file's upload date + device, from commit history
-│   ├── state.js          Synced favourites (.app/state.json) with conflict retry
-│   ├── blobs.js          File cache + prefetch (instant preview), duplicate hash
-│   ├── crypto.js         Password encryption of the token (PBKDF2 + AES-GCM)
-│   ├── style.css         All styles and colour tokens
-│   └── icon*.svg/png     Logo and home-screen icons
-├── tests/e2e.mjs         Browser test with a fake GitHub API (68 checks)
-├── docs/
-│   ├── SETUP.md          Step-by-step setup for a non-developer
-│   ├── ARCHITECTURE.md   How it works, security model, design decisions
-│   └── AI_HANDOFF.md     Brief for another AI (ChatGPT, Claude...) to continue the work
-└── CHANGELOG.md
+│   ├── app.js            UI, in numbered sections
+│   ├── github.js         the only code that talks to GitHub
+│   ├── organize.js       categories, search, sorting (pure functions)
+│   ├── meta.js           where and when each file was uploaded
+│   ├── state.js          synced favourites
+│   ├── blobs.js          file cache, prefetch, duplicate check
+│   ├── crypto.js         token encryption
+│   ├── setup.js          setup page logic
+│   └── style.css         all styles and colour tokens
+├── scripts/build-site.sh copies the site and cache-busts it for deploy
+├── tests/e2e.mjs         ~70 browser checks against a fake GitHub
+└── .github/workflows/    test on every push, deploy to Pages when green
 ```
 
-## Run locally
-
 ```bash
-python3 -m http.server 8080      # or: npx serve .
-# open http://localhost:8080
-```
-
-ES modules need a web server; opening `index.html` by double-click will not work.
-
-## Test
-
-```bash
-npm install            # installs Playwright (dev only)
-npx playwright install chromium
-python3 -m http.server 8080 &
+npm install && npx playwright install chromium
+npm run build && python3 -m http.server 8080 --directory _site &
 npm test
 ```
 
-The test fakes the GitHub API, so no token is needed. Screenshots land in `tests/screenshots/`.
+The tests fake the whole GitHub API, so no token is needed. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Continuing development with another AI
+## Design
 
-Give it [docs/AI_HANDOFF.md](docs/AI_HANDOFF.md) first. It explains the constraints, conventions and the roadmap.
+White first, with small touches from Saurashtra and Kathiyawad in Gujarat: a thin strip of **bandhani** (the tie-dye dots of Jamnagar), **kumkum** red and **haldi** yellow, and a bandhani ring around the logo. The colours are tokens at the top of `assets/style.css`.
+
+## Roadmap
+
+Expiry reminders for passports and permits, recently opened, notes and tags, multi-select, offline mode. Full list in [docs/AI_HANDOFF.md](docs/AI_HANDOFF.md).
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Jay Gohil

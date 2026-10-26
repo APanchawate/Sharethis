@@ -14,6 +14,8 @@ Paste this file (and whichever source files are relevant) into ChatGPT, Claude o
 4. **Render user data with `textContent`**, never `innerHTML` (file names are untrusted).
 5. **Uploads stay sequential** (parallel commits cause 409 conflicts).
 6. **Clean white UI with subtle Saurashtra touches.** Reuse the tokens in `assets/style.css` (`--kumkum` red, `--haldi` yellow, warm neutrals) and classes (`.btn`, `.btn-primary`, `.btn-ghost`, `.icon-btn`, `.input`, `.modal`, `.modal-box`, `.menu`, `.chip`). Keep the bandhani pattern to the thin strip, the logo and the lock screen ring; don't spread it. Mobile first, tap targets at least 40px.
+9. **Strict CSP.** No inline `<script>`, no inline `style=""`, no `eval`. Network only to `https://api.github.com`. A CSP violation fails the tests.
+10. **Deploys go through CI.** `.github/workflows/ci.yml` builds with `scripts/build-site.sh` (cache-busting `?v=`), tests that build, then deploys to Pages. New site files must be added to the copy list in that script.
 8. **Simplicity first.** New actions go in the ⋯ menu; the row itself only has the heart and ⋯.
 7. `config.js` is the only file a user should need to edit.
 
@@ -32,7 +34,7 @@ Paste this file (and whichever source files are relevant) into ChatGPT, Claude o
 ## How to verify a change
 
 ```bash
-python3 -m http.server 8080 &
+npm run build && python3 -m http.server 8080 --directory _site &
 npm test
 ```
 
