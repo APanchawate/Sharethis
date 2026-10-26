@@ -75,20 +75,24 @@ export class Vault {
 
   /**
    * Upload a new document. If the name is taken, adds " (2)", " (3)" ...
-   * Returns the final file name.
+   * `tag` goes into the commit message so other devices can show where the
+   * file came from: "Upload CV.pdf [iPhone, share]". See organize.parseCommit.
+   * Returns {name, path, sha} of the saved file.
    */
-  async upload(name, base64) {
+  async upload(name, base64, tag = "") {
     const dot = name.lastIndexOf(".");
     const stem = dot > 0 ? name.slice(0, dot) : name;
     const ext = dot > 0 ? name.slice(dot) : "";
     for (let n = 1; n < 100; n++) {
       const candidate = n === 1 ? name : `${stem} (${n})${ext}`;
+      const path = `${this.folder}/${candidate}`;
       try {
-        await this.request(this.url(`${this.folder}/${candidate}`), {
+        const res = await this.request(this.url(path), {
           method: "PUT",
-          body: { message: `Upload ${candidate}`, content: base64 },
+          body: { message: `Upload ${candidate}${tag ? ` [${tag}]` : ""}`, content: base64 },
         });
-        return candidate;
+        const data = await res.json().catch(() => ({}));
+        return { name: candidate, path, sha: data.content?.sha || null };
       } catch (e) {
         // 422 = file exists (no sha given). Try the next name.
         if (e.status !== 422) throw e;
@@ -98,10 +102,30 @@ export class Vault {
   }
 
   /** Delete a document. */
-  async remove(path, sha) {
+  async remove(path, sha, tag = "") {
     await this.request(this.url(path), {
       method: "DELETE",
-      body: { message: `Delete ${path.split("/").pop()}`, sha },
+      body: { message: `Delete ${path.split("/").pop()}${tag ? ` [${tag}]` : ""}`, sha },
     });
   }
+
+  /** One page (100) of commits touching the documents folder, newest first: [{message, date}]. */
+  async history(page = 1) {
+    const q = `path=${encodeURIComponent(this.folder)}&per_page=100&page=${page}`;
+    const res = await this.request(`${API}/repos/${this.owner}/${this.repo}/commits?${q}`);
+    return (await res.json()).map(simplifyCommit);
+  }
+
+  /** Latest commit that touched one file: {message, date} or null. */
+  async lastCommit(path) {
+    const q = `path=${encodeURIComponent(path)}&per_page=1`;
+    const res = await this.request(`${API}/repos/${this.owner}/${this.repo}/commits?${q}`);
+    const [c] = await res.json();
+    return c ? simplifyCommit(c) : null;
+  }
 }
+
+const simplifyCommit = (c) => ({
+  message: c.commit?.message || "",
+  date: c.commit?.committer?.date || c.commit?.author?.date || null,
+});

@@ -72,7 +72,12 @@ Open `https://YOUR-USERNAME.github.io/docsync/` on any device, enter your passwo
 
 Tip for phones: use the browser's **Add to Home Screen** for one-tap access.
 - iPhone (Safari): Share button > Add to Home Screen
-- Android (Chrome): menu ⋮ > Add to Home screen
+- Android (Chrome): menu ⋮ > Install app
+
+## Step 8 (optional). Save from other apps with the Share button
+
+- **Android**: after installing it (above), DocSync appears in the Share menu of every app. Nothing else to do.
+- **iPhone / iPad**: build the "Save to DocSync" Shortcut once: [IOS_SHORTCUT.md](IOS_SHORTCUT.md). The values to paste are in the app under the share icon at the top.
 
 ---
 

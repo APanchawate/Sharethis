@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#ffffff" />
   <meta name="robots" content="noindex" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="DocSync" />
   <title>DocSync</title>
+  <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="assets/icon.svg" />
+  <link rel="apple-touch-icon" href="assets/icon-180.png" />
   <link rel="stylesheet" href="assets/style.css" />
 </head>
 <body>
@@ -17,6 +20,7 @@
       <img src="assets/icon.svg" alt="" class="logo" width="56" height="56" />
       <h1>DocSync</h1>
       <p class="muted" id="lock-hint">Enter your password to open your documents.</p>
+      <p class="pending" id="lock-pending" hidden></p>
       <form id="lock-form" autocomplete="on">
         <!-- hidden username helps password managers remember the entry -->
         <input type="text" name="username" value="docsync" autocomplete="username" hidden />
@@ -33,6 +37,9 @@
     <header class="topbar">
       <div class="brand"><img src="assets/icon.svg" alt="" width="28" height="28" /> DocSync</div>
       <div class="topbar-actions">
+        <button class="icon-btn" id="share-help-btn" title="Send files from other apps" aria-label="Send files from other apps">
+          <svg viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+        </button>
         <button class="icon-btn" id="refresh-btn" title="Refresh" aria-label="Refresh">
           <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
         </button>
@@ -43,30 +50,53 @@
     </header>
 
     <main class="container">
-      <!-- Upload area: big button on phones, drop zone on desktop -->
-      <section id="dropzone" class="dropzone">
+      <!-- Upload: button, or drop files anywhere on the page -->
+      <section class="dropzone">
         <label class="btn btn-primary btn-upload">
           <svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
           Upload documents
           <input id="file-input" type="file" multiple hidden />
         </label>
-        <p class="muted small desktop-only">or drag and drop files here</p>
+        <p class="muted small desktop-only">or drag and drop files anywhere</p>
+        <button class="link-btn small touch-only" id="share-help-link" type="button">Save from other apps with the Share button</button>
       </section>
 
       <!-- Upload progress -->
       <ul id="queue" class="queue" aria-live="polite"></ul>
 
-      <div class="list-head">
-        <h2>Documents <span id="count" class="muted"></span></h2>
+      <!-- Search + sort -->
+      <div class="toolbar">
+        <div class="search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="search" class="input" type="search" placeholder="Search: passport, pdf, iphone…" autocomplete="off" enterkeyhint="search" />
+        </div>
+        <select id="sort" class="select" aria-label="Sort by">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="name">Name</option>
+          <option value="size">Largest</option>
+        </select>
       </div>
+
+      <!-- Auto categories -->
+      <nav id="chips" class="chips" aria-label="Categories"></nav>
 
       <ul id="file-list" class="file-list"></ul>
       <div id="empty" class="empty" hidden>
         <p>No documents yet.</p>
         <p class="muted small">Upload something and it will show up on every device.</p>
       </div>
+      <div id="no-results" class="empty" hidden>
+        <p id="no-results-text"></p>
+        <button class="btn btn-ghost" id="clear-search" type="button">Show all documents</button>
+      </div>
       <div id="loading" class="loading" hidden><span class="spinner"></span> Loading…</div>
     </main>
+  </div>
+
+  <!-- Shown while dragging files over the window -->
+  <div id="drop-overlay" class="drop-overlay" hidden>
+    <div><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>Drop to upload</div>
   </div>
 
   <!-- ============ PREVIEW MODAL ============ -->
@@ -94,6 +124,54 @@
         <button class="btn btn-ghost" data-close>Cancel</button>
         <button class="btn btn-danger" id="confirm-ok">Delete</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ============ SHARE HELP MODAL ============ -->
+  <div id="share-help" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <div class="modal-box modal-scroll">
+      <header class="modal-head plain">
+        <h3 id="share-title">Save files from other apps</h3>
+        <button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </header>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="ios">iPhone / iPad</button>
+        <button class="tab" role="tab" data-tab="android">Android</button>
+      </div>
+
+      <section class="tab-panel" data-panel="ios">
+        <p class="small">iPhone doesn't let websites join the Share menu, so we add a small Shortcut that does the upload. You set it up once, in about 5 minutes.</p>
+        <ol class="steps small">
+          <li>Open the <b>Shortcuts</b> app, tap <b>+</b>, name it <b>Save to DocSync</b>.</li>
+          <li>Tap the <b>ⓘ</b> (or the name at the top), turn on <b>Show in Share Sheet</b>. Set it to receive <b>Files, Images and PDFs</b>.</li>
+          <li>Add <b>Repeat with Each</b> item in <b>Shortcut Input</b>. Put steps 4 to 9 inside the loop.</li>
+          <li>Add <b>Get Details of Files</b>: <b>Name</b> of Repeat Item. Add it again for <b>File Extension</b>.</li>
+          <li>Add <b>Text</b>: <code>Name.File Extension</code> (tap to insert both variables, with a dot between).</li>
+          <li>Add <b>URL Encode</b> the Text. Add <b>Base64 Encode</b> the Repeat Item, and set Line Breaks to <b>None</b>.</li>
+          <li>Add <b>Get Contents of URL</b>. URL: the first value below, then tap to insert <b>URL Encoded Text</b> at the end. Method: <b>PUT</b>.</li>
+          <li>Headers: <b>Authorization</b> = the second value below. Request Body: <b>JSON</b> with two Text fields: <b>message</b> = <code>Upload Text [iPhone, share]</code> (insert the Text variable) and <b>content</b> = <b>Base64 Encoded</b>.</li>
+          <li>Add <b>Show Notification</b>: <code>Saved to DocSync</code>.</li>
+        </ol>
+        <div class="copy-row">
+          <label class="small muted" for="sc-url">1. URL (ends with a slash)</label>
+          <div class="copy-field"><input id="sc-url" class="input mono" readonly /><button class="btn btn-ghost" data-copy="sc-url" type="button">Copy</button></div>
+        </div>
+        <div class="copy-row">
+          <label class="small muted" for="sc-auth">2. Authorization header</label>
+          <div class="copy-field"><input id="sc-auth" class="input mono" readonly value="Bearer ••••••••" /><button class="btn btn-ghost" id="sc-auth-copy" type="button">Copy</button></div>
+          <p class="help-warn small">This is your access key. Anyone with it can read your documents. Paste it only into the Shortcut.</p>
+        </div>
+        <p class="small muted">Then in any app (Files, Photos, Mail, WhatsApp) tap Share, then <b>Save to DocSync</b>. On an iPad, write <code>iPad</code> instead of <code>iPhone</code> in the message. Full guide: docs/IOS_SHORTCUT.md in the repo.</p>
+      </section>
+
+      <section class="tab-panel" data-panel="android" hidden>
+        <ol class="steps small">
+          <li>Open this page in <b>Chrome</b>.</li>
+          <li>Tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>, then <b>Install</b>).</li>
+          <li>Done. In any app tap <b>Share</b> and pick <b>DocSync</b>. The files upload as soon as DocSync opens.</li>
+        </ol>
+        <p class="small muted">If DocSync doesn't appear in the Share menu, remove the home screen icon and install it again from Chrome.</p>
+      </section>
     </div>
   </div>
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0 (2026-10-26)
+
+- Auto categories from file names (ID & Visa, Work, Education, Money, Home, Photos, Other), English + German keywords
+- File origin: device, upload date and "shared" tag, read from commit messages `Upload <name> [<device>, <via>]`
+- Smart search (typo tolerant; types, devices, categories, months, today/week/month)
+- Sort: newest, oldest, name, largest
+- Drag and drop anywhere on the page
+- Android Share menu via installable app (manifest share_target + service worker)
+- iPhone/iPad "Save to DocSync" Shortcut guide, in-app help with copy buttons
+- PNG app icons for home screens
+
 ## 1.0.0 (2026-10-26)
 
 First release.

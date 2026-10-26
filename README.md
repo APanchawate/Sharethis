@@ -44,7 +44,12 @@ Full click-by-click guide: **[docs/SETUP.md](docs/SETUP.md)** (about 10 minutes)
 
 ## Features (v1)
 
-- Big "Upload documents" button (opens the file picker / camera roll / Files app on phones), plus drag and drop on desktop
+- Big "Upload documents" button (opens the file picker / camera roll / Files app on phones), plus drag and drop anywhere on the page
+- **Share from other apps**: Android installs DocSync into the Share menu; iPhone/iPad use a one-time "Save to DocSync" Shortcut ([docs/IOS_SHORTCUT.md](docs/IOS_SHORTCUT.md))
+- **Auto-organised** into categories from the file name (English + German keywords): ID & Visa, Work, Education, Money, Home, Photos, Other
+- **Where it came from**: each file shows the device (iPhone, Android, Mac, Windows PC...), upload date and a "shared" tag
+- **Smart search**: any order, forgives typos ("pasport"), understands types ("pdf", "photo"), devices ("iphone"), categories ("visa"), months and "today / week / month"
+- **Sort** by newest, oldest, name or size
 - Multi-file upload with progress; duplicate names are saved as `name (2).pdf` instead of overwriting
 - Preview in browser: PDFs, images, and text files (txt, md, csv, json). Other types offer a download.
 - Download and delete (with confirmation)
@@ -60,15 +65,20 @@ docsync/
 ├── index.html          The app (lock screen, file list, modals)
 ├── setup.html          One-time setup tool: encrypts your token, outputs config.js
 ├── config.js           Your settings (the only file you edit)
+├── manifest.webmanifest  Install-as-app + Android Share menu (share_target)
+├── sw.js               Service worker: receives files shared on Android
 ├── assets/
-│   ├── app.js          UI logic (lock, list, upload, preview, delete)
-│   ├── github.js       GitHub Contents API wrapper (list/upload/download/delete)
+│   ├── app.js          UI logic (lock, list, search, upload, preview, delete)
+│   ├── organize.js     Categories, smart search, sorting, device names (pure functions)
+│   ├── meta.js         Works out each file's upload date + device from commit history
+│   ├── github.js       GitHub API wrapper (list/upload/download/delete/history)
 │   ├── crypto.js       Password encryption of the token (Web Crypto, PBKDF2 + AES-GCM)
 │   ├── style.css       All styles
-│   └── icon.svg        Logo / favicon
+│   └── icon*.svg/png   Logo, favicon, app icons
 ├── tests/e2e.mjs       Browser test with a fake GitHub API
 ├── docs/
 │   ├── SETUP.md        Step-by-step setup for a non-developer
+│   ├── IOS_SHORTCUT.md Build the iPhone/iPad "Save to DocSync" Shortcut
 │   ├── ARCHITECTURE.md How it works, security model, design decisions
 │   └── AI_HANDOFF.md   Brief for another AI (ChatGPT, Claude...) to continue the work
 └── CHANGELOG.md
@@ -89,7 +99,7 @@ ES modules need a web server; opening `index.html` by double-click will not work
 npm install            # installs Playwright (dev only)
 npx playwright install chromium
 python3 -m http.server 8080 &
-npm test
+npm test        # sets the Playwright service-worker flag itself
 ```
 
 The test fakes the GitHub API, so no token is needed. Screenshots land in `tests/screenshots/`.

@@ -2,29 +2,37 @@
 // All the UI logic. Read top to bottom:
 //   1. setup + storage helpers
 //   2. lock screen (password / token)
-//   3. file list
-//   4. upload
+//   3. file list: decorate -> search -> category -> sort -> render
+//   4. upload: button, drop anywhere, files shared from other apps
 //   5. preview, download, delete
-//   6. small helpers (toast, modal, formatting)
+//   6. "save from other apps" help (iOS Shortcut / Android install)
+//   7. small helpers (toast, modal, formatting)
 
 import config from "../config.js";
 import { Vault } from "./github.js";
 import { decryptToken } from "./crypto.js";
+import { ALL_CATEGORIES, categorize, kindOf, searchFiles, sortFiles, thisDevice, formatDate } from "./organize.js";
+import { cachedMeta, rememberMeta, resolveMeta } from "./meta.js";
 
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "docsync.token";
+const SORT_KEY = "docsync.sort";
 const MAX_BYTES = (config.maxFileMB || 25) * 1024 * 1024;
+const DEVICE = thisDevice();
 
-let vault = null;   // Vault instance once unlocked
-let files = [];     // current file list
+let vault = null;      // Vault instance once unlocked
+let token = null;      // decrypted token (needed for the iOS Shortcut help)
+let files = [];        // raw list from GitHub: [{name, path, sha, size}]
+let meta = {};         // path -> {date, device, via}
+const view = { query: "", category: "all", sort: "newest" };
 
 // ---------------------------------------------------------------------------
 // 1. Token storage: localStorage if "remember this device", else session only
 // ---------------------------------------------------------------------------
 const store = {
   get: () => safe(() => localStorage.getItem(TOKEN_KEY)) || safe(() => sessionStorage.getItem(TOKEN_KEY)),
-  set: (token, remember) => {
-    safe(() => (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token));
+  set: (t, remember) => {
+    safe(() => (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, t));
   },
   clear: () => {
     safe(() => localStorage.removeItem(TOKEN_KEY));
@@ -33,8 +41,8 @@ const store = {
 };
 function safe(fn) { try { return fn(); } catch { return null; } }
 
-function makeVault(token) {
-  return new Vault({ owner: config.owner, repo: config.repo, folder: config.folder || "files", token });
+function makeVault(t) {
+  return new Vault({ owner: config.owner, repo: config.repo, folder: config.folder || "files", token: t });
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +50,7 @@ function makeVault(token) {
 // ---------------------------------------------------------------------------
 function showLock(message = "") {
   vault = null;
+  token = null;
   $("app").hidden = true;
   $("lock").hidden = false;
   const usePassword = !!config.encryptedToken;
@@ -68,11 +77,11 @@ $("lock-form").addEventListener("submit", async (e) => {
   btn.innerHTML = '<span class="spinner"></span> Unlocking';
   $("lock-error").textContent = "";
   try {
-    const token = config.encryptedToken ? await decryptToken(config.encryptedToken, value) : value;
-    const v = makeVault(token);
+    const t = config.encryptedToken ? await decryptToken(config.encryptedToken, value) : value;
+    const v = makeVault(t);
     await v.check();
-    store.set(token, $("remember").checked);
-    openApp(v);
+    store.set(t, $("remember").checked);
+    openApp(v, t);
   } catch (err) {
     $("lock-error").textContent = friendlyError(err);
   } finally {
@@ -86,21 +95,25 @@ $("logout-btn").addEventListener("click", () => {
   showLock("Locked. This device no longer has access until you unlock again.");
 });
 
-function openApp(v) {
+function openApp(v, t) {
   vault = v;
+  token = t;
   $("lock").hidden = true;
   $("app").hidden = false;
-  loadFiles();
+  loadFiles().then(uploadSharedFiles);
 }
 
 // ---------------------------------------------------------------------------
 // 3. File list
 // ---------------------------------------------------------------------------
 async function loadFiles({ quiet = false } = {}) {
-  if (!quiet) $("loading").hidden = false;
+  if (!quiet && !files.length) $("loading").hidden = false;
   try {
     files = await vault.list();
-    renderFiles();
+    meta = cachedMeta();
+    renderFiles();            // show right away with what we know
+    meta = await resolveMeta(vault, files);
+    renderFiles();            // then fill in dates and devices
   } catch (err) {
     handleError(err);
   } finally {
@@ -108,11 +121,47 @@ async function loadFiles({ quiet = false } = {}) {
   }
 }
 
+// Add category, date and device to each raw file
+function decorate(f) {
+  const m = meta[f.path] || {};
+  return { ...f, date: m.date || null, device: m.device || null, via: m.via || null, category: categorize(f.name) };
+}
+
 function renderFiles() {
-  const list = $("file-list");
-  list.replaceChildren(...files.map(fileRow));
+  const all = files.map(decorate);
+  const found = searchFiles(all, view.query);
+  renderChips(all, found);
+  const shown = view.category === "all" ? found : found.filter((f) => f.category.id === view.category);
+  const sorted = sortFiles(shown, view.sort);
+
+  $("file-list").replaceChildren(...sorted.map(fileRow));
   $("empty").hidden = files.length > 0;
-  $("count").textContent = files.length ? `(${files.length})` : "";
+  $("no-results").hidden = !(files.length && !sorted.length);
+  if (files.length && !sorted.length) {
+    const cat = ALL_CATEGORIES.find((c) => c.id === view.category);
+    $("no-results-text").textContent = view.query
+      ? `Nothing matches "${view.query}"${cat ? ` in ${cat.label}` : ""}.`
+      : `Nothing in ${cat?.label || "this category"}.`;
+  }
+}
+
+// Category chips: only categories that have files; counts follow the search
+function renderChips(all, found) {
+  const present = ALL_CATEGORIES.filter((c) => all.some((f) => f.category.id === c.id));
+  if (view.category !== "all" && !present.some((c) => c.id === view.category)) view.category = "all";
+  const chip = (id, label, n) => {
+    const b = el("button", "chip");
+    b.type = "button";
+    b.classList.toggle("on", view.category === id);
+    b.classList.toggle("zero", n === 0 && view.category !== id);
+    b.append(label, el("span", "n", String(n)));
+    b.addEventListener("click", () => { view.category = id; renderFiles(); });
+    return b;
+  };
+  const chips = [chip("all", "All", found.length)];
+  if (present.length > 1) present.forEach((c) => chips.push(chip(c.id, c.label, found.filter((f) => f.category.id === c.id).length)));
+  $("chips").replaceChildren(...chips);
+  $("chips").hidden = !all.length;
 }
 
 function fileRow(f) {
@@ -124,7 +173,9 @@ function fileRow(f) {
   main.title = `Preview ${f.name}`;
   const icon = el("span", `file-icon ${kind.cls}`, kind.label);
   const text = el("span", "file-text");
-  text.append(el("span", "file-name truncate", f.name), el("span", "file-meta", formatSize(f.size)));
+  const metaLine = el("span", "file-meta truncate", [formatSize(f.size), f.device, formatDate(f.date)].filter(Boolean).join(" · "));
+  if (f.via === "share") metaLine.append(" ", el("span", "tag", "shared"));
+  text.append(el("span", "file-name truncate", f.name), metaLine);
   main.append(icon, text);
   main.addEventListener("click", () => preview(f));
 
@@ -140,26 +191,60 @@ function fileRow(f) {
 
 $("refresh-btn").addEventListener("click", () => loadFiles());
 
+let searchTimer;
+$("search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { view.query = e.target.value.trim(); renderFiles(); }, 120);
+});
+$("clear-search").addEventListener("click", () => {
+  $("search").value = "";
+  view.query = "";
+  view.category = "all";
+  renderFiles();
+});
+
+view.sort = safe(() => localStorage.getItem(SORT_KEY)) || "newest";
+$("sort").value = view.sort;
+$("sort").addEventListener("change", (e) => {
+  view.sort = e.target.value;
+  safe(() => localStorage.setItem(SORT_KEY, view.sort));
+  renderFiles();
+});
+
 // ---------------------------------------------------------------------------
-// 4. Upload (button, drag and drop). Files go one by one to avoid
-//    GitHub "409 conflict" errors from parallel commits.
+// 4. Upload. Three ways in: the button, dropping files anywhere on the page,
+//    and files shared from other apps (Android share menu, see sw.js).
+//    Files go one by one to avoid GitHub "409 conflict" errors.
 // ---------------------------------------------------------------------------
 $("file-input").addEventListener("change", (e) => {
-  uploadAll([...e.target.files]);
+  uploadAll([...e.target.files], "upload");
   e.target.value = ""; // allow picking the same file again
 });
 
-const dz = $("dropzone");
-["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
-["dragleave", "drop"].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
-dz.addEventListener("drop", (e) => uploadAll([...(e.dataTransfer?.files || [])]));
-// Stop the browser from opening a file dropped outside the zone
+// Drop anywhere: show an overlay while files are dragged over the window
+let dragDepth = 0;
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e) || !vault) return;
+  e.preventDefault();
+  dragDepth++;
+  $("drop-overlay").hidden = false;
+});
+window.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) $("drop-overlay").hidden = true;
+});
 window.addEventListener("dragover", (e) => e.preventDefault());
-window.addEventListener("drop", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  $("drop-overlay").hidden = true;
+  if (vault) uploadAll([...(e.dataTransfer?.files || [])], "drop");
+});
 
 let uploading = Promise.resolve();
-function uploadAll(list) {
-  if (!vault || !list.length) return;
+function uploadAll(list, via = "upload") {
+  if (!vault || !list.length) return uploading;
   const rows = list.map((file) => {
     const li = el("li", "");
     li.append(el("span", "spinner"), el("span", "name truncate", file.name), el("span", "state muted", "Waiting"));
@@ -176,10 +261,11 @@ function uploadAll(list) {
         state.textContent = "Uploading";
         const name = cleanName(file.name);
         const base64 = await readBase64(file);
-        const finalName = await vault.upload(name, base64);
+        const saved = await vault.upload(name, base64, `${DEVICE}, ${via}`);
+        rememberMeta(saved.path, saved.sha, { date: new Date().toISOString(), device: DEVICE, via });
         li.className = "ok";
         li.querySelector(".spinner").remove();
-        state.textContent = finalName === name ? "Done" : `Saved as ${finalName}`;
+        state.textContent = saved.name === name ? "Done" : `Saved as ${saved.name}`;
         ok++;
         setTimeout(() => li.remove(), 4000);
       } catch (err) {
@@ -195,6 +281,7 @@ function uploadAll(list) {
       await loadFiles({ quiet: true });
     }
   });
+  return uploading;
 }
 
 function readBase64(file) {
@@ -210,6 +297,41 @@ function readBase64(file) {
 function cleanName(name) {
   const n = name.replace(/[\/\\\u0000-\u001f]/g, "_").replace(/^\.+/, "").trim();
   return n || `file-${Date.now()}`;
+}
+
+// Files shared from another Android app are parked by sw.js in a cache
+// called "docsync-share". Pick them up and upload them.
+const SHARE_CACHE = "docsync-share";
+
+async function takeSharedFiles() {
+  if (!("caches" in window)) return [];
+  try {
+    const cache = await caches.open(SHARE_CACHE);
+    const out = [];
+    for (const req of await cache.keys()) {
+      const res = await cache.match(req);
+      const blob = await res.blob();
+      out.push(new File([blob], decodeURIComponent(res.headers.get("x-name") || "shared-file"), { type: blob.type }));
+      await cache.delete(req);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function countSharedFiles() {
+  try { return "caches" in window ? (await (await caches.open(SHARE_CACHE)).keys()).length : 0; } catch { return 0; }
+}
+
+async function uploadSharedFiles() {
+  const shared = await takeSharedFiles();
+  if (location.search.includes("shared")) history.replaceState(null, "", location.pathname);
+  if (shared.length) await uploadAll(shared, "share");
+}
+
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("sw.js").catch(() => { /* not critical */ });
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +420,7 @@ function askDelete(f) {
   $("confirm-ok").onclick = async () => {
     closeModal("confirm");
     try {
-      await vault.remove(f.path, f.sha);
+      await vault.remove(f.path, f.sha, DEVICE);
       files = files.filter((x) => x.path !== f.path);
       renderFiles();
       toast("Deleted");
@@ -310,7 +432,42 @@ function askDelete(f) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Helpers
+// 6. "Save from other apps" help
+// ---------------------------------------------------------------------------
+function openShareHelp() {
+  const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
+  showTab(/Android/.test(navigator.userAgent) ? "android" : isApple ? "ios" : "ios");
+  $("sc-url").value = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${config.folder || "files"}/`;
+  $("sc-auth").value = "Bearer ••••••••••••";
+  openModal("share-help");
+}
+function showTab(id) {
+  document.querySelectorAll("#share-help .tab").forEach((t) => t.classList.toggle("on", t.dataset.tab === id));
+  document.querySelectorAll("#share-help .tab-panel").forEach((p) => (p.hidden = p.dataset.panel !== id));
+}
+document.querySelectorAll("#share-help .tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
+$("share-help-btn").addEventListener("click", openShareHelp);
+$("share-help-link").addEventListener("click", openShareHelp);
+$("sc-auth-copy").addEventListener("click", () => copyText(`Bearer ${token}`, $("sc-auth-copy")));
+document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () => copyText($(b.dataset.copy).value, b)));
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const t = el("textarea", "");
+    t.value = text;
+    document.body.append(t);
+    t.select();
+    safe(() => document.execCommand("copy"));
+    t.remove();
+  }
+  button.textContent = "Copied";
+  setTimeout(() => (button.textContent = "Copy"), 2000);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Helpers
 // ---------------------------------------------------------------------------
 function openModal(id) { $(id).hidden = false; }
 function closeModal(id) {
@@ -324,6 +481,8 @@ document.querySelectorAll(".modal").forEach((m) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") document.querySelectorAll(".modal:not([hidden])").forEach((m) => closeModal(m.id));
+  // "/" jumps to search, like on GitHub
+  if (e.key === "/" && vault && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); $("search").focus(); }
 });
 
 let toastTimer;
@@ -390,40 +549,18 @@ function formatSize(b) {
 
 const isAndroid = () => /android/i.test(navigator.userAgent);
 
-// File type table: icon label, colour class, MIME type, how to preview
-const TYPES = {
-  pdf:  ["PDF", "pdf", "application/pdf", "pdf"],
-  png:  ["PNG", "img", "image/png", "image"],
-  jpg:  ["JPG", "img", "image/jpeg", "image"],
-  jpeg: ["JPG", "img", "image/jpeg", "image"],
-  gif:  ["GIF", "img", "image/gif", "image"],
-  webp: ["WEBP", "img", "image/webp", "image"],
-  svg:  ["SVG", "img", "image/svg+xml", "image"],
-  heic: ["HEIC", "img", "image/heic", "image"],
-  txt:  ["TXT", "", "text/plain", "text"],
-  md:   ["MD", "", "text/plain", "text"],
-  csv:  ["CSV", "sheet", "text/plain", "text"],
-  json: ["JSON", "", "text/plain", "text"],
-  xml:  ["XML", "", "text/plain", "text"],
-  log:  ["LOG", "", "text/plain", "text"],
-  doc:  ["DOC", "doc", "application/msword", "none"],
-  docx: ["DOCX", "doc", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "none"],
-  xls:  ["XLS", "sheet", "application/vnd.ms-excel", "none"],
-  xlsx: ["XLSX", "sheet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "none"],
-  ppt:  ["PPT", "", "application/vnd.ms-powerpoint", "none"],
-  pptx: ["PPTX", "", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "none"],
-  zip:  ["ZIP", "", "application/zip", "none"],
-};
-function kindOf(name) {
-  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
-  const t = TYPES[ext];
-  if (!t) return { label: (ext || "FILE").slice(0, 4).toUpperCase(), cls: "", mime: "application/octet-stream", view: "none" };
-  return { label: t[0], cls: t[1], mime: t[2], view: t[3] };
-}
-
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 const saved = store.get();
-if (saved && config.owner) openApp(makeVault(saved));
-else showLock();
+if (saved && config.owner) {
+  openApp(makeVault(saved), saved);
+} else {
+  showLock();
+  // Files shared while locked wait in the cache until unlock
+  countSharedFiles().then((n) => {
+    if (!n) return;
+    $("lock-pending").textContent = `${n} shared file${n > 1 ? "s" : ""} waiting. Unlock to save ${n > 1 ? "them" : "it"}.`;
+    $("lock-pending").hidden = false;
+  });
+}
