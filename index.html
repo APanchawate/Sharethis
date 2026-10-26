@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="robots" content="noindex" />
+  <title>DocSync</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="assets/icon.svg" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <!-- ============ LOCK SCREEN ============ -->
+  <main id="lock" class="lock" hidden>
+    <div class="lock-card">
+      <img src="assets/icon.svg" alt="" class="logo" width="56" height="56" />
+      <h1>DocSync</h1>
+      <p class="muted" id="lock-hint">Enter your password to open your documents.</p>
+      <form id="lock-form" autocomplete="on">
+        <!-- hidden username helps password managers remember the entry -->
+        <input type="text" name="username" value="docsync" autocomplete="username" hidden />
+        <input id="lock-input" class="input" type="password" autocomplete="current-password" placeholder="Password" required />
+        <label class="check"><input id="remember" type="checkbox" checked /> Remember this device</label>
+        <button class="btn btn-primary btn-block" id="lock-btn" type="submit">Unlock</button>
+        <p class="error" id="lock-error" role="alert"></p>
+      </form>
+    </div>
+  </main>
+
+  <!-- ============ MAIN APP ============ -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand"><img src="assets/icon.svg" alt="" width="28" height="28" /> DocSync</div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="refresh-btn" title="Refresh" aria-label="Refresh">
+          <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+        </button>
+        <button class="icon-btn" id="logout-btn" title="Lock this device" aria-label="Lock this device">
+          <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- Upload area: big button on phones, drop zone on desktop -->
+      <section id="dropzone" class="dropzone">
+        <label class="btn btn-primary btn-upload">
+          <svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+          Upload documents
+          <input id="file-input" type="file" multiple hidden />
+        </label>
+        <p class="muted small desktop-only">or drag and drop files here</p>
+      </section>
+
+      <!-- Upload progress -->
+      <ul id="queue" class="queue" aria-live="polite"></ul>
+
+      <div class="list-head">
+        <h2>Documents <span id="count" class="muted"></span></h2>
+      </div>
+
+      <ul id="file-list" class="file-list"></ul>
+      <div id="empty" class="empty" hidden>
+        <p>No documents yet.</p>
+        <p class="muted small">Upload something and it will show up on every device.</p>
+      </div>
+      <div id="loading" class="loading" hidden><span class="spinner"></span> Loading…</div>
+    </main>
+  </div>
+
+  <!-- ============ PREVIEW MODAL ============ -->
+  <div id="preview" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="preview-title">
+    <div class="modal-box modal-wide">
+      <header class="modal-head">
+        <h3 id="preview-title" class="truncate"></h3>
+        <div class="modal-actions">
+          <a id="preview-open" class="btn btn-ghost" target="_blank" rel="noopener">Open</a>
+          <a id="preview-download" class="btn btn-ghost">Download</a>
+          <button class="icon-btn" data-close aria-label="Close">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+      </header>
+      <div id="preview-body" class="preview-body"></div>
+    </div>
+  </div>
+
+  <!-- ============ CONFIRM MODAL ============ -->
+  <div id="confirm" class="modal" hidden role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <p id="confirm-text"></p>
+      <div class="row-end">
+        <button class="btn btn-ghost" data-close>Cancel</button>
+        <button class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script type="module" src="assets/app.js"></script>
+</body>
+</html>

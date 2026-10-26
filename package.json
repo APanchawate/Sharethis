@@ -1,0 +1,15 @@
+{
+  "name": "docsync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private document locker on GitHub Pages + a private GitHub repo",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0"
+  },
+  "license": "MIT"
+}
