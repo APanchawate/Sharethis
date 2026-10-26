@@ -3,43 +3,46 @@
 //   1. setup + storage helpers
 //   2. lock screen (password / token)
 //   3. file list: decorate -> search -> category -> sort -> render
-//   4. upload: button, drop anywhere, files shared from other apps
-//   5. preview, download, delete
-//   6. "save from other apps" help (iOS Shortcut / Android install)
+//   4. upload: button, drop anywhere, paste; skips exact duplicates
+//   5. file actions: preview, favourite, copy, send to app, download, rename, delete (+ undo)
+//   6. actions menu (the ⋯ button)
 //   7. small helpers (toast, modal, formatting)
 
 import config from "../config.js";
 import { Vault } from "./github.js";
 import { decryptToken } from "./crypto.js";
-import { ALL_CATEGORIES, categorize, kindOf, searchFiles, sortFiles, thisDevice, formatDate } from "./organize.js";
+import { ALL_CATEGORIES, categorize, kindOf, extOf, canPreview, searchFiles, sortFiles, thisDevice, formatDate } from "./organize.js";
 import { cachedMeta, rememberMeta, resolveMeta } from "./meta.js";
+import { SharedState, clearLocalState } from "./state.js";
+import { getBlob, prefetch, isReady, readyBlob, rememberBlob, clearBlobs, gitBlobSha } from "./blobs.js";
 
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "docsync.token";
 const SORT_KEY = "docsync.sort";
+const LIST_KEY = "docsync.list.v1";
 const MAX_BYTES = (config.maxFileMB || 25) * 1024 * 1024;
 const DEVICE = thisDevice();
 
 let vault = null;      // Vault instance once unlocked
-let token = null;      // decrypted token (needed for the iOS Shortcut help)
+let state = null;      // SharedState (favourites), synced through the vault
 let files = [];        // raw list from GitHub: [{name, path, sha, size}]
 let meta = {};         // path -> {date, device, via}
 const view = { query: "", category: "all", sort: "newest" };
 
 // ---------------------------------------------------------------------------
-// 1. Token storage: localStorage if "remember this device", else session only
+// 1. Local storage helpers. Everything is wrapped: private mode can throw.
 // ---------------------------------------------------------------------------
-const store = {
-  get: () => safe(() => localStorage.getItem(TOKEN_KEY)) || safe(() => sessionStorage.getItem(TOKEN_KEY)),
-  set: (t, remember) => {
-    safe(() => (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, t));
-  },
-  clear: () => {
-    safe(() => localStorage.removeItem(TOKEN_KEY));
-    safe(() => sessionStorage.removeItem(TOKEN_KEY));
-  },
-};
 function safe(fn) { try { return fn(); } catch { return null; } }
+const local = {
+  get: (k) => safe(() => localStorage.getItem(k)),
+  set: (k, v) => safe(() => localStorage.setItem(k, v)),
+  del: (k) => safe(() => localStorage.removeItem(k)),
+};
+const tokenStore = {
+  get: () => local.get(TOKEN_KEY) || safe(() => sessionStorage.getItem(TOKEN_KEY)),
+  set: (t, remember) => safe(() => (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, t)),
+  clear: () => { local.del(TOKEN_KEY); safe(() => sessionStorage.removeItem(TOKEN_KEY)); },
+};
 
 function makeVault(t) {
   return new Vault({ owner: config.owner, repo: config.repo, folder: config.folder || "files", token: t });
@@ -50,7 +53,7 @@ function makeVault(t) {
 // ---------------------------------------------------------------------------
 function showLock(message = "") {
   vault = null;
-  token = null;
+  state = null;
   $("app").hidden = true;
   $("lock").hidden = false;
   const usePassword = !!config.encryptedToken;
@@ -80,8 +83,8 @@ $("lock-form").addEventListener("submit", async (e) => {
     const t = config.encryptedToken ? await decryptToken(config.encryptedToken, value) : value;
     const v = makeVault(t);
     await v.check();
-    store.set(t, $("remember").checked);
-    openApp(v, t);
+    tokenStore.set(t, $("remember").checked);
+    openApp(v);
   } catch (err) {
     $("lock-error").textContent = friendlyError(err);
   } finally {
@@ -90,17 +93,29 @@ $("lock-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("logout-btn").addEventListener("click", () => {
-  store.clear();
-  showLock("Locked. This device no longer has access until you unlock again.");
+// Lock: forget the token AND everything cached on this device
+$("logout-btn").addEventListener("click", async () => {
+  tokenStore.clear();
+  local.del(LIST_KEY);
+  clearLocalState();
+  await clearBlobs();
+  files = [];
+  showLock("Locked. Nothing from your documents is left on this device.");
 });
 
-function openApp(v, t) {
+function openApp(v) {
   vault = v;
-  token = t;
+  state = new SharedState(v);
   $("lock").hidden = true;
   $("app").hidden = false;
-  loadFiles().then(uploadSharedFiles);
+  // Instant start: draw the last known list right away, then refresh
+  const cached = safe(() => JSON.parse(local.get(LIST_KEY)));
+  if (Array.isArray(cached) && cached.length) {
+    files = cached;
+    meta = cachedMeta();
+    renderFiles();
+  }
+  loadFiles();
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +124,14 @@ function openApp(v, t) {
 async function loadFiles({ quiet = false } = {}) {
   if (!quiet && !files.length) $("loading").hidden = false;
   try {
-    files = await vault.list();
+    const [list] = await Promise.all([vault.list(), state.load().catch(() => null)]);
+    files = list;
+    local.set(LIST_KEY, JSON.stringify(files));
     meta = cachedMeta();
     renderFiles();            // show right away with what we know
     meta = await resolveMeta(vault, files);
     renderFiles();            // then fill in dates and devices
+    warmFavourites();
   } catch (err) {
     handleError(err);
   } finally {
@@ -121,36 +139,49 @@ async function loadFiles({ quiet = false } = {}) {
   }
 }
 
-// Add category, date and device to each raw file
+// Favourites are what you open most, so fetch small ones in the background
+function warmFavourites() {
+  files.filter((f) => state.isFavorite(f.path) && f.size < 5e6).slice(0, 10).forEach((f) => prefetch(vault, f));
+}
+
+// Add category, date, device and favourite flag to each raw file
 function decorate(f) {
   const m = meta[f.path] || {};
-  return { ...f, date: m.date || null, device: m.device || null, via: m.via || null, category: categorize(f.name) };
+  return { ...f, date: m.date || null, device: m.device || null, via: m.via || null, category: categorize(f.name), fav: !!state?.isFavorite(f.path) };
 }
 
 function renderFiles() {
   const all = files.map(decorate);
   const found = searchFiles(all, view.query);
   renderChips(all, found);
-  const shown = view.category === "all" ? found : found.filter((f) => f.category.id === view.category);
+  let shown = found;
+  if (view.category === "fav") shown = found.filter((f) => f.fav);
+  else if (view.category !== "all") shown = found.filter((f) => f.category.id === view.category);
   const sorted = sortFiles(shown, view.sort);
+  // favourites stay on top, in the chosen order
+  const ordered = [...sorted.filter((f) => f.fav), ...sorted.filter((f) => !f.fav)];
 
-  $("file-list").replaceChildren(...sorted.map(fileRow));
+  $("file-list").replaceChildren(...ordered.map(fileRow));
   $("empty").hidden = files.length > 0;
-  $("no-results").hidden = !(files.length && !sorted.length);
-  if (files.length && !sorted.length) {
-    const cat = ALL_CATEGORIES.find((c) => c.id === view.category);
+  const none = files.length && !ordered.length;
+  $("no-results").hidden = !none;
+  if (none) {
+    const label = view.category === "fav" ? "Favourites" : ALL_CATEGORIES.find((c) => c.id === view.category)?.label;
     $("no-results-text").textContent = view.query
-      ? `Nothing matches "${view.query}"${cat ? ` in ${cat.label}` : ""}.`
-      : `Nothing in ${cat?.label || "this category"}.`;
+      ? `Nothing matches "${view.query}"${label ? ` in ${label}` : ""}.`
+      : view.category === "fav" ? "No favourites yet. Tap the heart on a document." : `Nothing in ${label || "this category"}.`;
   }
 }
 
-// Category chips: only categories that have files; counts follow the search
+// Chips: All, Favourites (if any), then categories that have files.
+// Counts follow the current search.
 function renderChips(all, found) {
   const present = ALL_CATEGORIES.filter((c) => all.some((f) => f.category.id === c.id));
-  if (view.category !== "all" && !present.some((c) => c.id === view.category)) view.category = "all";
-  const chip = (id, label, n) => {
-    const b = el("button", "chip");
+  const hasFav = all.some((f) => f.fav);
+  if (view.category === "fav" && !hasFav) view.category = "all";
+  if (!["all", "fav"].includes(view.category) && !present.some((c) => c.id === view.category)) view.category = "all";
+  const chip = (id, label, n, cls = "") => {
+    const b = el("button", `chip ${cls}`);
     b.type = "button";
     b.classList.toggle("on", view.category === id);
     b.classList.toggle("zero", n === 0 && view.category !== id);
@@ -159,31 +190,47 @@ function renderChips(all, found) {
     return b;
   };
   const chips = [chip("all", "All", found.length)];
+  if (hasFav) chips.push(chip("fav", "♥ Favourites", found.filter((f) => f.fav).length, "chip-fav"));
   if (present.length > 1) present.forEach((c) => chips.push(chip(c.id, c.label, found.filter((f) => f.category.id === c.id).length)));
   $("chips").replaceChildren(...chips);
   $("chips").hidden = !all.length;
 }
 
+const HEART = '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>';
+const DOTS = '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>';
+
 function fileRow(f) {
   const kind = kindOf(f.name);
   const li = el("li", "file");
+  li.dataset.path = f.path;
 
   const main = el("button", "file-main");
   main.type = "button";
-  main.title = `Preview ${f.name}`;
+  const previewable = canPreview(f.name);
+  main.title = previewable ? `Preview ${f.name}` : `Options for ${f.name}`;
   const icon = el("span", `file-icon ${kind.cls}`, kind.label);
   const text = el("span", "file-text");
   const metaLine = el("span", "file-meta truncate", [formatSize(f.size), f.device, formatDate(f.date)].filter(Boolean).join(" · "));
   if (f.via === "share") metaLine.append(" ", el("span", "tag", "shared"));
   text.append(el("span", "file-name truncate", f.name), metaLine);
   main.append(icon, text);
-  main.addEventListener("click", () => preview(f));
+  // Supported files open the preview; everything else opens the actions menu
+  main.addEventListener("click", () => (previewable ? preview(f) : openMenu(f, main)));
+
+  // Start downloading as soon as the pointer/finger lands, so the click is instant
+  if (previewable) {
+    const warm = () => prefetch(vault, f);
+    li.addEventListener("pointerenter", warm, { once: true });
+    li.addEventListener("touchstart", warm, { once: true, passive: true });
+  }
 
   const actions = el("div", "file-actions");
-  actions.append(
-    iconButton("Download", '<path d="M12 4v12M6 10l6 6 6-6M4 20h16"/>', () => download(f)),
-    iconButton("Delete", '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>', () => askDelete(f))
-  );
+  const heart = iconButton(f.fav ? "Remove from favourites" : "Add to favourites", HEART, () => toggleFavorite(f));
+  heart.classList.add("heart");
+  heart.setAttribute("aria-pressed", String(f.fav));
+  const more = iconButton("More options", DOTS, (e) => openMenu(f, e.currentTarget));
+  more.classList.add("more");
+  actions.append(heart, more);
 
   li.append(main, actions);
   return li;
@@ -203,17 +250,16 @@ $("clear-search").addEventListener("click", () => {
   renderFiles();
 });
 
-view.sort = safe(() => localStorage.getItem(SORT_KEY)) || "newest";
+view.sort = local.get(SORT_KEY) || "newest";
 $("sort").value = view.sort;
 $("sort").addEventListener("change", (e) => {
   view.sort = e.target.value;
-  safe(() => localStorage.setItem(SORT_KEY, view.sort));
+  local.set(SORT_KEY, view.sort);
   renderFiles();
 });
 
 // ---------------------------------------------------------------------------
-// 4. Upload. Three ways in: the button, dropping files anywhere on the page,
-//    and files shared from other apps (Android share menu, see sw.js).
+// 4. Upload. Three ways in: the button, dropping files anywhere, pasting.
 //    Files go one by one to avoid GitHub "409 conflict" errors.
 // ---------------------------------------------------------------------------
 $("file-input").addEventListener("change", (e) => {
@@ -242,6 +288,16 @@ window.addEventListener("drop", (e) => {
   if (vault) uploadAll([...(e.dataTransfer?.files || [])], "drop");
 });
 
+// Paste: a screenshot or files copied in Finder / Explorer upload directly
+document.addEventListener("paste", (e) => {
+  if (!vault || /INPUT|TEXTAREA/.test(document.activeElement?.tagName)) return;
+  const pasted = [...(e.clipboardData?.files || [])].map((f) =>
+    // pasted screenshots are all called "image.png": give them a useful name
+    f.name === "image.png" ? new File([f], `Screenshot ${new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", ".")}.png`, { type: f.type }) : f
+  );
+  if (pasted.length) { e.preventDefault(); uploadAll(pasted, "paste"); }
+});
+
 let uploading = Promise.resolve();
 function uploadAll(list, via = "upload") {
   if (!vault || !list.length) return uploading;
@@ -255,25 +311,31 @@ function uploadAll(list, via = "upload") {
   uploading = uploading.then(async () => {
     let ok = 0;
     for (const { file, li } of rows) {
-      const state = li.querySelector(".state");
+      const state_ = li.querySelector(".state");
+      const finish = (cls, text, ms) => {
+        li.className = cls;
+        li.querySelector(".spinner")?.remove();
+        state_.textContent = text;
+        setTimeout(() => li.remove(), ms);
+      };
       try {
         if (file.size > MAX_BYTES) throw new Error(`Too large (max ${config.maxFileMB || 25} MB)`);
-        state.textContent = "Uploading";
+        // Same bytes already in the vault? Don't store it twice.
+        const sha = await gitBlobSha(file);
+        const twin = files.find((f) => f.sha === sha);
+        if (twin) { finish("ok", `Already saved as ${twin.name}`, 6000); continue; }
+
+        state_.textContent = "Uploading";
         const name = cleanName(file.name);
         const base64 = await readBase64(file);
         const saved = await vault.upload(name, base64, `${DEVICE}, ${via}`);
         rememberMeta(saved.path, saved.sha, { date: new Date().toISOString(), device: DEVICE, via });
-        li.className = "ok";
-        li.querySelector(".spinner").remove();
-        state.textContent = saved.name === name ? "Done" : `Saved as ${saved.name}`;
+        rememberBlob(saved.sha || sha, file);
+        finish("ok", saved.name === name ? "Done" : `Saved as ${saved.name}`, 4000);
         ok++;
-        setTimeout(() => li.remove(), 4000);
       } catch (err) {
-        li.className = "fail";
-        li.querySelector(".spinner")?.remove();
-        state.textContent = friendlyError(err);
+        finish("fail", friendlyError(err), 10000);
         if (err.status === 401) return handleError(err);
-        setTimeout(() => li.remove(), 10000);
       }
     }
     if (ok) {
@@ -299,91 +361,46 @@ function cleanName(name) {
   return n || `file-${Date.now()}`;
 }
 
-// Files shared from another Android app are parked by sw.js in a cache
-// called "docsync-share". Pick them up and upload them.
-const SHARE_CACHE = "docsync-share";
-
-async function takeSharedFiles() {
-  if (!("caches" in window)) return [];
-  try {
-    const cache = await caches.open(SHARE_CACHE);
-    const out = [];
-    for (const req of await cache.keys()) {
-      const res = await cache.match(req);
-      const blob = await res.blob();
-      out.push(new File([blob], decodeURIComponent(res.headers.get("x-name") || "shared-file"), { type: blob.type }));
-      await cache.delete(req);
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-async function countSharedFiles() {
-  try { return "caches" in window ? (await (await caches.open(SHARE_CACHE)).keys()).length : 0; } catch { return 0; }
-}
-
-async function uploadSharedFiles() {
-  const shared = await takeSharedFiles();
-  if (location.search.includes("shared")) history.replaceState(null, "", location.pathname);
-  if (shared.length) await uploadAll(shared, "share");
-}
-
-if ("serviceWorker" in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register("sw.js").catch(() => { /* not critical */ });
-}
-
 // ---------------------------------------------------------------------------
-// 5. Preview, download, delete
+// 5. File actions
 // ---------------------------------------------------------------------------
+const current = (path) => files.map(decorate).find((f) => f.path === path);
+
+// ----- Preview (only for types this browser can show) -----
 let previewUrl = null;
+let previewing = null;
 
 async function preview(f) {
+  previewing = f.path;
   const kind = kindOf(f.name);
   $("preview-title").textContent = f.name;
+  syncPreviewHeart();
+  $("preview-copy").hidden = !copyKind(f);
+  $("preview-share").hidden = !canShareFiles();
   const body = $("preview-body");
-  body.replaceChildren(loadingEl());
-  $("preview-open").hidden = true;
-  $("preview-download").hidden = true;
+  // cached bytes render with no spinner at all
+  if (!isReady(f)) body.replaceChildren(loadingEl());
   openModal("preview");
 
   try {
-    const blob = await vault.download(f.path);
-    if ($("preview").hidden) return; // closed while loading
-    const typed = new Blob([blob], { type: kind.mime });
-    previewUrl = URL.createObjectURL(typed);
-
-    const open = $("preview-open");
-    open.href = previewUrl;
-    open.hidden = false;
-    const dl = $("preview-download");
-    dl.href = previewUrl;
-    dl.download = f.name;
-    dl.hidden = false;
+    const blob = await getBlob(vault, f);
+    if ($("preview").hidden || previewing !== f.path) return; // closed or switched while loading
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(new Blob([blob], { type: kind.mime }));
 
     if (kind.view === "image") {
       const img = new Image();
       img.alt = f.name;
+      img.decoding = "async";
       img.src = previewUrl;
       body.replaceChildren(img);
-    } else if (kind.view === "pdf" && navigator.pdfViewerEnabled !== false && !isAndroid()) {
+    } else if (kind.view === "pdf") {
       const frame = document.createElement("iframe");
       frame.title = f.name;
       frame.src = previewUrl;
       body.replaceChildren(frame);
-    } else if (kind.view === "text") {
-      body.replaceChildren(el("pre", "", await typed.text()));
     } else {
-      // Word, Excel, zip, PDFs on Android, etc.: browser cannot show inline
-      const msg = el("div", "preview-msg");
-      msg.append(el("p", "", "This file type can't be previewed here."));
-      const a = el("a", "btn btn-primary", kind.view === "pdf" ? "Open PDF" : "Download");
-      a.href = previewUrl;
-      if (kind.view === "pdf") a.target = "_blank";
-      else a.download = f.name;
-      msg.append(a);
-      body.replaceChildren(msg);
+      body.replaceChildren(el("pre", "", await blob.text()));
     }
   } catch (err) {
     body.replaceChildren(el("div", "preview-msg", friendlyError(err)));
@@ -391,16 +408,96 @@ async function preview(f) {
   }
 }
 
+function syncPreviewHeart() {
+  const on = !!state?.isFavorite(previewing);
+  $("preview-fav").setAttribute("aria-pressed", String(on));
+  $("preview-fav").title = on ? "Remove from favourites" : "Add to favourites";
+}
+
 function closePreview() {
+  previewing = null;
   $("preview-body").replaceChildren();
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
 }
 
+$("preview-fav").addEventListener("click", () => { const f = current(previewing); if (f) toggleFavorite(f); syncPreviewHeart(); });
+$("preview-copy").addEventListener("click", () => { const f = current(previewing); if (f) copyFile(f); });
+$("preview-share").addEventListener("click", () => { const f = current(previewing); if (f) shareFile(f); });
+$("preview-download").addEventListener("click", () => { const f = current(previewing); if (f) download(f); });
+
+// ----- Favourite (synced to every device through .app/state.json) -----
+function toggleFavorite(f) {
+  const on = !state.isFavorite(f.path);
+  state.toggleFavorite(f.path).catch(handleError);
+  renderFiles();
+  toast(on ? "Added to favourites" : "Removed from favourites");
+}
+
+// ----- Copy to clipboard -----
+// Browsers only allow images and text on the clipboard, not PDFs or Word
+// files. For those, "Send to an app" is the way to hand the file over.
+function copyKind(f) {
+  if (!window.ClipboardItem || !navigator.clipboard?.write) return null;
+  const { view } = kindOf(f.name);
+  if (view === "text") return "text";
+  if (view === "image" && !["svg", "heic"].includes(extOf(f.name))) return "image";
+  return null;
+}
+
+async function copyFile(f) {
+  const kind = copyKind(f);
+  if (!kind) return toast("This file type can't go on the clipboard. Use Send to an app or Download.", true);
+  // The ClipboardItem must be created inside the tap, with the data as a promise
+  const data = getBlob(vault, f);
+  const item = kind === "text"
+    ? new ClipboardItem({ "text/plain": data.then((b) => new Blob([b], { type: "text/plain" })) })
+    : new ClipboardItem({ "image/png": data.then(toPng) });
+  try {
+    await navigator.clipboard.write([item]);
+    toast(kind === "text" ? "Text copied" : "Image copied. Paste it anywhere.");
+  } catch {
+    toast("Your browser blocked the copy. Try again, or use Download.", true);
+  }
+}
+
+// Clipboards accept PNG only, so other image types are redrawn as PNG
+async function toPng(blob) {
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement("canvas");
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext("2d").drawImage(bmp, 0, 0);
+  return new Promise((res) => c.toBlob(res, "image/png"));
+}
+
+// ----- Send to an app (system share sheet: WhatsApp, Mail, AirDrop ...) -----
+function canShareFiles() {
+  return !!navigator.canShare && safe(() => navigator.canShare({ files: [new File(["x"], "x.pdf", { type: "application/pdf" })] }));
+}
+
+async function shareFile(f) {
+  // The share sheet must open within the tap, so the bytes need to be ready.
+  if (!isReady(f)) {
+    toast("Getting the file ready…");
+    await getBlob(vault, f).catch(handleError);
+  }
+  const blob = readyBlob(f);
+  if (!blob) return;
+  const file = new File([blob], f.name, { type: kindOf(f.name).mime });
+  try {
+    await navigator.share({ files: [file], title: f.name });
+  } catch (err) {
+    if (err.name === "NotAllowedError") toast("File is ready. Tap Send again.");
+    else if (err.name !== "AbortError") toast("Couldn't open the share menu.", true);
+  }
+}
+
+// ----- Download -----
 async function download(f) {
   try {
-    toast(`Downloading ${f.name}…`);
-    const blob = await vault.download(f.path);
+    if (!isReady(f)) toast(`Downloading ${f.name}…`);
+    const blob = await getBlob(vault, f);
     const url = URL.createObjectURL(new Blob([blob], { type: kindOf(f.name).mime }));
     const a = el("a", "");
     a.href = url;
@@ -414,16 +511,63 @@ async function download(f) {
   }
 }
 
+// ----- Rename (one commit, no re-upload, keeps origin and favourite) -----
+let renaming = null;
+function askRename(f) {
+  renaming = f;
+  const input = $("rename-input");
+  input.value = f.name;
+  $("rename-error").textContent = "";
+  openModal("rename");
+  // select the name without the extension, like Finder / Explorer
+  const dot = f.name.lastIndexOf(".");
+  setTimeout(() => { input.focus(); input.setSelectionRange(0, dot > 0 ? dot : f.name.length); }, 30);
+}
+
+$("rename-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = renaming;
+  let name = cleanName($("rename-input").value.trim());
+  // keep the extension if it was removed by accident
+  const oldExt = extOf(f.name);
+  if (oldExt && !extOf(name)) name = `${name}.${oldExt}`;
+  if (name === f.name) return closeModal("rename");
+  if (files.some((x) => x.name.toLowerCase() === name.toLowerCase() && x.path !== f.path)) {
+    $("rename-error").textContent = `"${name}" already exists.`;
+    return;
+  }
+  const btn = $("rename-ok");
+  btn.disabled = true;
+  try {
+    const saved = await vault.rename(f.path, f.sha, name, DEVICE);
+    if (meta[f.path]) rememberMeta(saved.path, saved.sha, { date: meta[f.path].date, device: meta[f.path].device, via: meta[f.path].via });
+    state.renamePath(f.path, saved.path).catch(() => {});
+    files = files.map((x) => (x.path === f.path ? { ...x, name: saved.name, path: saved.path } : x));
+    meta = cachedMeta();
+    renderFiles();
+    closeModal("rename");
+    toast(`Renamed to ${saved.name}`);
+  } catch (err) {
+    $("rename-error").textContent = friendlyError(err);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ----- Delete, with Undo -----
 function askDelete(f) {
   $("confirm-text").textContent = `Delete "${f.name}" from all devices?`;
   openModal("confirm");
   $("confirm-ok").onclick = async () => {
     closeModal("confirm");
+    const wasFav = state.isFavorite(f.path);
+    const m = meta[f.path];
     try {
       await vault.remove(f.path, f.sha, DEVICE);
       files = files.filter((x) => x.path !== f.path);
+      state.forgetPath(f.path).catch(() => {});
       renderFiles();
-      toast("Deleted");
+      toast(`Deleted ${f.name}`, false, { label: "Undo", run: () => undoDelete(f, wasFav, m) });
     } catch (err) {
       handleError(err);
       loadFiles({ quiet: true });
@@ -431,40 +575,75 @@ function askDelete(f) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// 6. "Save from other apps" help
-// ---------------------------------------------------------------------------
-function openShareHelp() {
-  const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
-  showTab(/Android/.test(navigator.userAgent) ? "android" : isApple ? "ios" : "ios");
-  $("sc-url").value = `https://api.github.com/repos/${config.owner}/${config.repo}/contents/${config.folder || "files"}/`;
-  $("sc-auth").value = "Bearer ••••••••••••";
-  openModal("share-help");
-}
-function showTab(id) {
-  document.querySelectorAll("#share-help .tab").forEach((t) => t.classList.toggle("on", t.dataset.tab === id));
-  document.querySelectorAll("#share-help .tab-panel").forEach((p) => (p.hidden = p.dataset.panel !== id));
-}
-document.querySelectorAll("#share-help .tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
-$("share-help-btn").addEventListener("click", openShareHelp);
-$("share-help-link").addEventListener("click", openShareHelp);
-$("sc-auth-copy").addEventListener("click", () => copyText(`Bearer ${token}`, $("sc-auth-copy")));
-document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () => copyText($(b.dataset.copy).value, b)));
-
-async function copyText(text, button) {
+// git still has the file's bytes, so undo just points the path back at them
+async function undoDelete(f, wasFav, m) {
   try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const t = el("textarea", "");
-    t.value = text;
-    document.body.append(t);
-    t.select();
-    safe(() => document.execCommand("copy"));
-    t.remove();
+    await vault.restore(f.path, f.sha, m ? `${m.device || DEVICE}, ${m.via || "upload"}` : `${DEVICE}, restore`);
+    if (m) rememberMeta(f.path, f.sha, m);
+    if (wasFav) state.toggleFavorite(f.path).catch(() => {});
+    toast(`Restored ${f.name}`);
+    await loadFiles({ quiet: true });
+  } catch (err) {
+    handleError(err);
   }
-  button.textContent = "Copied";
-  setTimeout(() => (button.textContent = "Copy"), 2000);
 }
+
+// ---------------------------------------------------------------------------
+// 6. Actions menu (⋯). Shows only what works for this file on this device.
+// ---------------------------------------------------------------------------
+let menuFile = null;
+function openMenu(f, anchor) {
+  menuFile = f;
+  const menu = $("menu");
+  $("menu-title").textContent = f.name;
+  const show = {
+    preview: canPreview(f.name),
+    favorite: true,
+    copy: !!copyKind(f),
+    share: canShareFiles(),
+    download: true,
+    rename: true,
+    delete: true,
+  };
+  menu.querySelectorAll("[data-act]").forEach((b) => (b.hidden = !show[b.dataset.act]));
+  menu.querySelector('[data-act="favorite"] span').textContent = f.fav ? "Remove from favourites" : "Add to favourites";
+  if (show.share || show.copy) prefetch(vault, f); // so Send/Copy work on the first tap
+
+  menu.hidden = false;
+  $("menu-backdrop").hidden = false;
+  // Phones: bottom sheet (CSS). Larger screens: next to the button.
+  if (matchMedia("(min-width: 601px)").matches) {
+    const r = anchor.getBoundingClientRect();
+    const h = menu.offsetHeight, w = menu.offsetWidth;
+    const top = r.bottom + 4 + h > innerHeight ? Math.max(8, r.top - h - 4) : r.bottom + 4;
+    menu.style.top = `${top}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+  } else {
+    menu.style.top = menu.style.left = "";
+  }
+  menu.querySelector("button:not([hidden])")?.focus({ preventScroll: true });
+}
+function closeMenu() {
+  $("menu").hidden = true;
+  $("menu-backdrop").hidden = true;
+}
+$("menu-backdrop").addEventListener("click", closeMenu);
+$("menu").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b || !menuFile) return;
+  const f = menuFile;
+  closeMenu();
+  ({
+    preview: () => preview(f),
+    favorite: () => toggleFavorite(f),
+    copy: () => copyFile(f),
+    share: () => shareFile(f),
+    download: () => download(f),
+    rename: () => askRename(f),
+    delete: () => askDelete(f),
+  })[b.dataset.act]();
+});
+window.addEventListener("resize", closeMenu);
 
 // ---------------------------------------------------------------------------
 // 7. Helpers
@@ -480,24 +659,34 @@ document.querySelectorAll(".modal").forEach((m) => {
   });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") document.querySelectorAll(".modal:not([hidden])").forEach((m) => closeModal(m.id));
+  if (e.key === "Escape") {
+    closeMenu();
+    document.querySelectorAll(".modal:not([hidden])").forEach((m) => closeModal(m.id));
+  }
   // "/" jumps to search, like on GitHub
-  if (e.key === "/" && vault && document.activeElement?.tagName !== "INPUT") { e.preventDefault(); $("search").focus(); }
+  if (e.key === "/" && vault && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); $("search").focus(); }
 });
 
 let toastTimer;
-function toast(text, isError = false) {
+/** toast("Saved") or toast("Deleted x", false, {label: "Undo", run}) */
+function toast(text, isError = false, action = null) {
   const t = $("toast");
-  t.textContent = text;
+  $("toast-text").textContent = text;
+  const btn = $("toast-action");
+  btn.hidden = !action;
+  if (action) {
+    btn.textContent = action.label;
+    btn.onclick = () => { t.hidden = true; action.run(); };
+  }
   t.className = isError ? "toast err" : "toast";
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), isError ? 6000 : 3000);
+  toastTimer = setTimeout(() => (t.hidden = true), action ? 8000 : isError ? 6000 : 3000);
 }
 
 function handleError(err) {
-  if (err.status === 401) {
-    store.clear();
+  if (err?.status === 401) {
+    tokenStore.clear();
     showLock("Your access token expired or was revoked. Unlock again (or create a new token, see docs/SETUP.md).");
   } else {
     toast(friendlyError(err), true);
@@ -547,20 +736,9 @@ function formatSize(b) {
   return `${(b / 1024 ** 2).toFixed(1)} MB`;
 }
 
-const isAndroid = () => /android/i.test(navigator.userAgent);
-
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
-const saved = store.get();
-if (saved && config.owner) {
-  openApp(makeVault(saved), saved);
-} else {
-  showLock();
-  // Files shared while locked wait in the cache until unlock
-  countSharedFiles().then((n) => {
-    if (!n) return;
-    $("lock-pending").textContent = `${n} shared file${n > 1 ? "s" : ""} waiting. Unlock to save ${n > 1 ? "them" : "it"}.`;
-    $("lock-pending").hidden = false;
-  });
-}
+const savedToken = tokenStore.get();
+if (savedToken && config.owner) openApp(makeVault(savedToken));
+else showLock();

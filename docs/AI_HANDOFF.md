@@ -4,7 +4,7 @@ Paste this file (and whichever source files are relevant) into ChatGPT, Claude o
 
 ## What this is
 
-DocSync: a static web app on GitHub Pages that stores documents in a private GitHub repo through the GitHub REST Contents API. Owner unlocks with a password that decrypts a fine-grained GitHub token kept in `config.js`. Read `README.md` and `docs/ARCHITECTURE.md` for the full picture.
+"a really helpful tool" (repo name docsync): a static web app on GitHub Pages that stores documents in a private GitHub repo through the GitHub REST Contents API. Owner unlocks with a password that decrypts a fine-grained GitHub token kept in `config.js`. Read `README.md` and `docs/ARCHITECTURE.md` for the full picture.
 
 ## Hard constraints (do not break)
 
@@ -13,7 +13,8 @@ DocSync: a static web app on GitHub Pages that stores documents in a private Git
 3. **Never put a raw token in the repo.** Only the encrypted blob from `setup.html`.
 4. **Render user data with `textContent`**, never `innerHTML` (file names are untrusted).
 5. **Uploads stay sequential** (parallel commits cause 409 conflicts).
-6. **Clean white UI.** Reuse the CSS variables and classes in `assets/style.css` (`.btn`, `.btn-primary`, `.btn-ghost`, `.icon-btn`, `.input`, `.modal`, `.modal-box`). Mobile first, tap targets at least 40px.
+6. **Clean white UI with subtle Saurashtra touches.** Reuse the tokens in `assets/style.css` (`--kumkum` red, `--haldi` yellow, warm neutrals) and classes (`.btn`, `.btn-primary`, `.btn-ghost`, `.icon-btn`, `.input`, `.modal`, `.modal-box`, `.menu`, `.chip`). Keep the bandhani pattern to the thin strip, the logo and the lock screen ring; don't spread it. Mobile first, tap targets at least 40px.
+8. **Simplicity first.** New actions go in the ⋯ menu; the row itself only has the heart and ⋯.
 7. `config.js` is the only file a user should need to edit.
 
 ## Code map
@@ -21,9 +22,10 @@ DocSync: a static web app on GitHub Pages that stores documents in a private Git
 - `assets/github.js` - `Vault` class. Add new GitHub API calls here, nowhere else.
 - `assets/organize.js` - pure functions (no DOM, no network): categories + keywords, smart search, sorting, device detection, commit-message parsing. Add categories/keywords here.
 - `assets/meta.js` - file origins from commit history, cached in localStorage.
-- `assets/app.js` - UI. Sections are numbered 1 to 7 in comments; keep that order.
-- `sw.js` + `manifest.webmanifest` - Android share target only. Do not add offline caching without versioning (stale app risk).
-- Commit message contract: `Upload <name> [<device>, <via>]`. The iOS Shortcut (docs/IOS_SHORTCUT.md) writes it too; keep it backwards compatible.
+- `assets/state.js` - synced favourites in `.app/state.json`. Add new synced settings here (same op + retry pattern).
+- `assets/blobs.js` - file cache and prefetch. Keyed by sha; cleared on lock.
+- `assets/app.js` - UI. Sections are numbered 1 to 7 in comments; keep that order. Menu actions are wired in section 6.
+- Commit message contract: `Upload <name> [<device>, <via>]` and `Rename <old> -> <new> [<device>]`. `meta.js` depends on it; keep it backwards compatible.
 - `assets/crypto.js` - do not change the format without bumping `v` and keeping `v: 1` decryptable.
 - `tests/e2e.mjs` - Playwright test with a mocked GitHub API. Extend the mock when you add API calls, and add assertions for new features.
 
@@ -31,22 +33,23 @@ DocSync: a static web app on GitHub Pages that stores documents in a private Git
 
 ```bash
 python3 -m http.server 8080 &
-PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS=1 npm test
+npm test
 ```
 
 All checks must print `ok`. Look at `tests/screenshots/` for desktop and iPhone layouts.
 
 ## Roadmap (ideas, in rough priority order)
 
-Done in 1.1: search, sort, auto categories, upload dates/devices, Android share target, iOS Shortcut.
+Done: search, sort, auto categories, origins (1.1); favourites, rename, copy, send, undo delete, duplicate check, paste, instant preview, new name and design (1.2). Removed in 1.2 on purpose: iOS Shortcut and Android share target (owner didn't want them).
 
-1. **Manual category override** - e.g. a `categories.json` in the vault mapping file name -> category id, edited from a "Move to..." menu.
-2. **Folders** - allow `files/<folder>/<name>`; list with the Git Trees API (`GET /repos/{o}/{r}/git/trees/HEAD?recursive=1`) to get everything in one call.
-3. **Signed iOS Shortcut** - build it once on a Mac, share an iCloud link so setup is one tap (token still pasted by the user).
-4. **Content search** - search inside PDFs (pdf.js text extraction, cached per sha). Heavier; only if needed.
-5. **Rename** - Contents API has no rename: upload under the new name then delete the old one.
-6. **Bigger files** - switch upload to the Git Data API (create blob, create tree, create commit, update ref) for up to 100 MB.
-7. **Camera scan** - `<input type="file" accept="image/*" capture="environment">` button on phones.
+1. **Expiry reminders** - optional expiry date per file in `state.json` (passport, visa, residence permit, insurance); a "Due soon" chip and a banner 60/30/7 days before.
+2. **Recent** - "Recently opened" chip from a per-device list (localStorage), so the last few files are one tap away.
+3. **Notes / tags per file** - a short note or extra keywords in `state.json`, included in search.
+4. **Multi-select** - long-press / checkbox to download, favourite or delete several files at once.
+5. **Manual category override** - `state.json` map name -> category, set from a "Move to..." menu item.
+6. **Offline mode** - the blob cache already holds opened files; add a service worker that serves the app shell offline (version it to avoid stale code).
+7. **Bigger files** - upload through the Git Data API (create blob) for up to 100 MB.
+8. **Content search inside PDFs** - pdf.js text extraction, cached per sha. Heavier; only if needed.
 
 ## Conventions
 

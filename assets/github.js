@@ -1,7 +1,11 @@
 // github.js
-// Thin wrapper around the GitHub REST "Contents" API.
-// Every document is one file at <folder>/<name> in the private vault repo.
-// Docs: https://docs.github.com/en/rest/repos/contents
+// Thin wrapper around the GitHub REST API. Every document is one file at
+// <folder>/<name> in the private vault repo. Nothing else talks to GitHub.
+//
+//   Contents API  (list, upload, download, delete, small JSON state file)
+//     https://docs.github.com/en/rest/repos/contents
+//   Git Data API  (rename and undo-delete as one atomic commit, no re-upload)
+//     https://docs.github.com/en/rest/git
 
 const API = "https://api.github.com";
 
@@ -15,16 +19,24 @@ export class GitHubError extends Error {
 // Encode each path segment but keep the slashes.
 const encPath = (p) => p.split("/").map(encodeURIComponent).join("/");
 
+// UTF-8 safe base64 for JSON state
+const textToB64 = (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+
 export class Vault {
   constructor({ owner, repo, folder, token }) {
     this.owner = owner;
     this.repo = repo;
     this.folder = folder.replace(/^\/+|\/+$/g, "");
     this.token = token;
+    this.branch = null; // default branch, learned in check() or commitTree()
+  }
+
+  get repoUrl() {
+    return `${API}/repos/${this.owner}/${this.repo}`;
   }
 
   url(path = "") {
-    return `${API}/repos/${this.owner}/${this.repo}/contents/${encPath(path)}`;
+    return `${this.repoUrl}/contents/${encPath(path)}`;
   }
 
   async request(url, { method = "GET", body, accept = "application/vnd.github+json" } = {}) {
@@ -49,7 +61,8 @@ export class Vault {
 
   /** Checks the token can see the repo. Throws GitHubError otherwise. */
   async check() {
-    await this.request(`${API}/repos/${this.owner}/${this.repo}`);
+    const repo = await (await this.request(this.repoUrl)).json();
+    this.branch = repo.default_branch || "main";
   }
 
   /** List documents: [{name, path, sha, size}] sorted by name. */
@@ -76,7 +89,7 @@ export class Vault {
   /**
    * Upload a new document. If the name is taken, adds " (2)", " (3)" ...
    * `tag` goes into the commit message so other devices can show where the
-   * file came from: "Upload CV.pdf [iPhone, share]". See organize.parseCommit.
+   * file came from: "Upload CV.pdf [iPhone, upload]". See organize.parseCommit.
    * Returns {name, path, sha} of the saved file.
    */
   async upload(name, base64, tag = "") {
@@ -109,17 +122,77 @@ export class Vault {
     });
   }
 
+  /**
+   * Rename without re-uploading: one commit that points the new path at the
+   * same blob and removes the old path. Returns {name, path, sha}.
+   */
+  async rename(oldPath, sha, newName, tag = "") {
+    const newPath = `${this.folder}/${newName}`;
+    await this.commitTree(
+      [
+        { path: newPath, mode: "100644", type: "blob", sha },
+        { path: oldPath, mode: "100644", type: "blob", sha: null },
+      ],
+      `Rename ${oldPath.split("/").pop()} -> ${newName}${tag ? ` [${tag}]` : ""}`
+    );
+    return { name: newName, path: newPath, sha };
+  }
+
+  /** Undo a delete: git keeps the old blob, so we just point the path at it again. */
+  async restore(path, sha, tag = "") {
+    await this.commitTree([{ path, mode: "100644", type: "blob", sha }], `Upload ${path.split("/").pop()}${tag ? ` [${tag}]` : ""}`);
+  }
+
+  /** Make one commit on the default branch that changes the given tree entries. */
+  async commitTree(entries, message, retry = true) {
+    if (!this.branch) await this.check();
+    const refUrl = `${this.repoUrl}/git/refs/heads/${encodeURIComponent(this.branch)}`;
+    const ref = await (await this.request(`${this.repoUrl}/git/ref/heads/${encodeURIComponent(this.branch)}`)).json();
+    const head = await (await this.request(`${this.repoUrl}/git/commits/${ref.object.sha}`)).json();
+    const tree = await (await this.request(`${this.repoUrl}/git/trees`, { method: "POST", body: { base_tree: head.tree.sha, tree: entries } })).json();
+    const commit = await (await this.request(`${this.repoUrl}/git/commits`, { method: "POST", body: { message, tree: tree.sha, parents: [ref.object.sha] } })).json();
+    try {
+      await this.request(refUrl, { method: "PATCH", body: { sha: commit.sha } });
+    } catch (e) {
+      // 422 = someone else committed in between; start again once
+      if (e.status === 422 && retry) return this.commitTree(entries, message, false);
+      throw e;
+    }
+  }
+
+  /** Read a small JSON file outside the documents folder: {data, sha} or {data: null}. */
+  async readJSON(path) {
+    try {
+      // The default JSON response has the content (base64) and the sha we need to update it later
+      const file = await (await this.request(this.url(path))).json();
+      const bytes = Uint8Array.from(atob(file.content.replace(/\s/g, "")), (c) => c.charCodeAt(0));
+      return { data: JSON.parse(new TextDecoder().decode(bytes)), sha: file.sha };
+    } catch (e) {
+      if (e.status === 404) return { data: null, sha: null };
+      throw e;
+    }
+  }
+
+  /** Create or replace a small JSON file. Returns the new sha. Throws 409/422 on conflict. */
+  async writeJSON(path, data, sha, message) {
+    const res = await this.request(this.url(path), {
+      method: "PUT",
+      body: { message, content: textToB64(JSON.stringify(data, null, 2) + "\n"), ...(sha ? { sha } : {}) },
+    });
+    return (await res.json()).content?.sha || null;
+  }
+
   /** One page (100) of commits touching the documents folder, newest first: [{message, date}]. */
   async history(page = 1) {
     const q = `path=${encodeURIComponent(this.folder)}&per_page=100&page=${page}`;
-    const res = await this.request(`${API}/repos/${this.owner}/${this.repo}/commits?${q}`);
+    const res = await this.request(`${this.repoUrl}/commits?${q}`);
     return (await res.json()).map(simplifyCommit);
   }
 
   /** Latest commit that touched one file: {message, date} or null. */
   async lastCommit(path) {
     const q = `path=${encodeURIComponent(path)}&per_page=1`;
-    const res = await this.request(`${API}/repos/${this.owner}/${this.repo}/commits?${q}`);
+    const res = await this.request(`${this.repoUrl}/commits?${q}`);
     const [c] = await res.json();
     return c ? simplifyCommit(c) : null;
   }

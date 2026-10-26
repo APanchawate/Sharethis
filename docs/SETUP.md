@@ -1,4 +1,4 @@
-# Setup guide
+# Setup guide: a really helpful tool
 
 About 10 minutes, all in the browser. You need a free GitHub account.
 
@@ -29,7 +29,7 @@ gh repo create docsync --public --source=. --push
 
 1. Open `https://github.com/YOUR-USERNAME/docsync` > **Settings** > **Pages**.
 2. *Source*: **Deploy from a branch**. *Branch*: **main**, folder **/ (root)**. Save.
-3. Wait about a minute. Your app is at `https://YOUR-USERNAME.github.io/docsync/`.
+3. Wait about a minute. The app is at `https://YOUR-USERNAME.github.io/docsync/`.
 
 It will say "This site is not set up yet". That's expected.
 
@@ -74,11 +74,6 @@ Tip for phones: use the browser's **Add to Home Screen** for one-tap access.
 - iPhone (Safari): Share button > Add to Home Screen
 - Android (Chrome): menu ⋮ > Install app
 
-## Step 8 (optional). Save from other apps with the Share button
-
-- **Android**: after installing it (above), DocSync appears in the Share menu of every app. Nothing else to do.
-- **iPhone / iPad**: build the "Save to DocSync" Shortcut once: [IOS_SHORTCUT.md](IOS_SHORTCUT.md). The values to paste are in the app under the share icon at the top.
-
 ---
 
 ## Everyday questions
@@ -89,7 +84,7 @@ Tip for phones: use the browser's **Add to Home Screen** for one-tap access.
 
 **Token expired.** The app will ask you to unlock again and fail. Create a new token (step 4), then steps 5 and 6.
 
-**I deleted a file by mistake.** Go to `github.com/YOUR-USERNAME/docsync-vault/commits`, open the "Delete ..." commit, and view the file in the parent commit to download it.
+**I deleted a file by mistake.** Tap **Undo** in the message that appears right after deleting. Later than that: go to `github.com/YOUR-USERNAME/docsync-vault/commits`, open the "Delete ..." commit, and view the file in the parent commit to download it.
 
 **Where are my files really?** `github.com/YOUR-USERNAME/docsync-vault/tree/main/files`. You can also upload there directly; the app will show them.
 

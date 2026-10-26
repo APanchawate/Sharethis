@@ -227,16 +227,33 @@ export function thisDevice(ua = navigator.userAgent, touch = navigator.maxTouchP
 }
 
 /**
- * Commit messages written by DocSync (and the iOS Shortcut) look like:
+ * Commit messages written by this app look like:
  *   "Upload CV.pdf [iPhone, share]"
  * Returns {action, name, device, via} or null for other messages.
  */
 export function parseCommit(message) {
   const line = String(message || "").split("\n")[0].trim();
+  // "Rename old.pdf -> new.pdf [Mac]"
+  const r = line.match(/^Rename (.+?) -> (.+?)(?: \[([^\]]+)\])?$/);
+  if (r) return { action: "Rename", from: r[1], name: r[2], device: r[3] || null, via: null };
   const m = line.match(/^(Upload|Delete) (.+?)(?: \[([^\],\]]+?)(?:, *([^\]]+?))?\])?$/);
   if (!m) return null;
   return { action: m[1], name: m[2], device: m[3] || null, via: m[4] || null };
 }
+
+/**
+ * Can this browser show the file inline? Only then does a tap open the
+ * preview; other files open the actions menu instead.
+ */
+export function canPreview(name, ua = navigator.userAgent) {
+  const { view } = kindOf(name);
+  const ext = extOf(name);
+  if (view === "text") return true;
+  if (view === "image") return ext !== "heic" || isSafari(ua); // only Safari decodes HEIC
+  if (view === "pdf") return !/Android/i.test(ua) && (typeof navigator === "undefined" || navigator.pdfViewerEnabled !== false);
+  return false;
+}
+const isSafari = (ua) => /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Android/.test(ua);
 
 export function formatDate(iso, now = new Date()) {
   if (!iso) return "";

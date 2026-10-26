@@ -1,4 +1,4 @@
-// DocSync configuration
+// a really helpful tool: configuration
 // ---------------------------------------------------------------------------
 // This is the ONLY file you need to edit after forking/cloning.
 // Generate the values with setup.html (open it from your live site), then

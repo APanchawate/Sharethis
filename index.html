@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#ffffff" />
   <meta name="robots" content="noindex" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="DocSync" />
-  <title>DocSync</title>
+  <meta name="apple-mobile-web-app-title" content="Helpful" />
+  <title>a really helpful tool</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="assets/icon-180.png" />
@@ -17,13 +17,12 @@
   <!-- ============ LOCK SCREEN ============ -->
   <main id="lock" class="lock" hidden>
     <div class="lock-card">
-      <img src="assets/icon.svg" alt="" class="logo" width="56" height="56" />
-      <h1>DocSync</h1>
+      <div class="lock-mark"><img src="assets/icon.svg" alt="" class="logo" width="64" height="64" /></div>
+      <h1>a really helpful tool</h1>
       <p class="muted" id="lock-hint">Enter your password to open your documents.</p>
-      <p class="pending" id="lock-pending" hidden></p>
       <form id="lock-form" autocomplete="on">
         <!-- hidden username helps password managers remember the entry -->
-        <input type="text" name="username" value="docsync" autocomplete="username" hidden />
+        <input type="text" name="username" value="helpful-tool" autocomplete="username" hidden />
         <input id="lock-input" class="input" type="password" autocomplete="current-password" placeholder="Password" required />
         <label class="check"><input id="remember" type="checkbox" checked /> Remember this device</label>
         <button class="btn btn-primary btn-block" id="lock-btn" type="submit">Unlock</button>
@@ -35,11 +34,8 @@
   <!-- ============ MAIN APP ============ -->
   <div id="app" hidden>
     <header class="topbar">
-      <div class="brand"><img src="assets/icon.svg" alt="" width="28" height="28" /> DocSync</div>
+      <div class="brand"><img src="assets/icon.svg" alt="" width="28" height="28" /> <span class="truncate">a really helpful tool</span></div>
       <div class="topbar-actions">
-        <button class="icon-btn" id="share-help-btn" title="Send files from other apps" aria-label="Send files from other apps">
-          <svg viewBox="0 0 24 24"><path d="M12 15V3M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
-        </button>
         <button class="icon-btn" id="refresh-btn" title="Refresh" aria-label="Refresh">
           <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
         </button>
@@ -48,17 +44,18 @@
         </button>
       </div>
     </header>
+    <!-- bandhani border (Jamnagar tie-dye dots), purely decorative -->
+    <div class="bandhani" aria-hidden="true"></div>
 
     <main class="container">
-      <!-- Upload: button, or drop files anywhere on the page -->
+      <!-- Upload: button, drop files anywhere, or paste -->
       <section class="dropzone">
         <label class="btn btn-primary btn-upload">
           <svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
           Upload documents
           <input id="file-input" type="file" multiple hidden />
         </label>
-        <p class="muted small desktop-only">or drag and drop files anywhere</p>
-        <button class="link-btn small touch-only" id="share-help-link" type="button">Save from other apps with the Share button</button>
+        <p class="muted small desktop-only">or drop files anywhere, or paste with Ctrl+V</p>
       </section>
 
       <!-- Upload progress -->
@@ -78,7 +75,7 @@
         </select>
       </div>
 
-      <!-- Auto categories -->
+      <!-- Favourites + auto categories -->
       <nav id="chips" class="chips" aria-label="Categories"></nav>
 
       <ul id="file-list" class="file-list"></ul>
@@ -99,14 +96,37 @@
     <div><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>Drop to upload</div>
   </div>
 
+  <!-- ============ ACTIONS MENU (the ⋯ button) ============ -->
+  <div id="menu-backdrop" class="menu-backdrop" hidden></div>
+  <div id="menu" class="menu" hidden role="menu">
+    <div class="menu-title truncate" id="menu-title"></div>
+    <button role="menuitem" data-act="preview"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
+    <button role="menuitem" data-act="favorite"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg><span>Add to favourites</span></button>
+    <button role="menuitem" data-act="copy"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy to clipboard</button>
+    <button role="menuitem" data-act="share"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/></svg>Send to an app…</button>
+    <button role="menuitem" data-act="download"><svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6 6 6-6M4 20h16"/></svg>Download</button>
+    <button role="menuitem" data-act="rename"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4"/></svg>Rename</button>
+    <button role="menuitem" data-act="delete" class="danger"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>
+  </div>
+
   <!-- ============ PREVIEW MODAL ============ -->
   <div id="preview" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="preview-title">
     <div class="modal-box modal-wide">
       <header class="modal-head">
         <h3 id="preview-title" class="truncate"></h3>
         <div class="modal-actions">
-          <a id="preview-open" class="btn btn-ghost" target="_blank" rel="noopener">Open</a>
-          <a id="preview-download" class="btn btn-ghost">Download</a>
+          <button class="icon-btn heart" id="preview-fav" title="Favourite" aria-label="Favourite" aria-pressed="false">
+            <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>
+          </button>
+          <button class="icon-btn" id="preview-copy" title="Copy to clipboard" aria-label="Copy to clipboard">
+            <svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          </button>
+          <button class="icon-btn" id="preview-share" title="Send to an app" aria-label="Send to an app">
+            <svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/></svg>
+          </button>
+          <button class="icon-btn" id="preview-download" title="Download" aria-label="Download">
+            <svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6 6 6-6M4 20h16"/></svg>
+          </button>
           <button class="icon-btn" data-close aria-label="Close">
             <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
@@ -114,6 +134,19 @@
       </header>
       <div id="preview-body" class="preview-body"></div>
     </div>
+  </div>
+
+  <!-- ============ RENAME MODAL ============ -->
+  <div id="rename" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="rename-title">
+    <form class="modal-box" id="rename-form">
+      <h3 id="rename-title" class="modal-title">Rename</h3>
+      <input id="rename-input" class="input" autocomplete="off" spellcheck="false" required />
+      <p class="error" id="rename-error" role="alert"></p>
+      <div class="row-end">
+        <button class="btn btn-ghost" type="button" data-close>Cancel</button>
+        <button class="btn btn-primary" id="rename-ok" type="submit">Rename</button>
+      </div>
+    </form>
   </div>
 
   <!-- ============ CONFIRM MODAL ============ -->
@@ -127,55 +160,7 @@
     </div>
   </div>
 
-  <!-- ============ SHARE HELP MODAL ============ -->
-  <div id="share-help" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="share-title">
-    <div class="modal-box modal-scroll">
-      <header class="modal-head plain">
-        <h3 id="share-title">Save files from other apps</h3>
-        <button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-      </header>
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" data-tab="ios">iPhone / iPad</button>
-        <button class="tab" role="tab" data-tab="android">Android</button>
-      </div>
-
-      <section class="tab-panel" data-panel="ios">
-        <p class="small">iPhone doesn't let websites join the Share menu, so we add a small Shortcut that does the upload. You set it up once, in about 5 minutes.</p>
-        <ol class="steps small">
-          <li>Open the <b>Shortcuts</b> app, tap <b>+</b>, name it <b>Save to DocSync</b>.</li>
-          <li>Tap the <b>ⓘ</b> (or the name at the top), turn on <b>Show in Share Sheet</b>. Set it to receive <b>Files, Images and PDFs</b>.</li>
-          <li>Add <b>Repeat with Each</b> item in <b>Shortcut Input</b>. Put steps 4 to 9 inside the loop.</li>
-          <li>Add <b>Get Details of Files</b>: <b>Name</b> of Repeat Item. Add it again for <b>File Extension</b>.</li>
-          <li>Add <b>Text</b>: <code>Name.File Extension</code> (tap to insert both variables, with a dot between).</li>
-          <li>Add <b>URL Encode</b> the Text. Add <b>Base64 Encode</b> the Repeat Item, and set Line Breaks to <b>None</b>.</li>
-          <li>Add <b>Get Contents of URL</b>. URL: the first value below, then tap to insert <b>URL Encoded Text</b> at the end. Method: <b>PUT</b>.</li>
-          <li>Headers: <b>Authorization</b> = the second value below. Request Body: <b>JSON</b> with two Text fields: <b>message</b> = <code>Upload Text [iPhone, share]</code> (insert the Text variable) and <b>content</b> = <b>Base64 Encoded</b>.</li>
-          <li>Add <b>Show Notification</b>: <code>Saved to DocSync</code>.</li>
-        </ol>
-        <div class="copy-row">
-          <label class="small muted" for="sc-url">1. URL (ends with a slash)</label>
-          <div class="copy-field"><input id="sc-url" class="input mono" readonly /><button class="btn btn-ghost" data-copy="sc-url" type="button">Copy</button></div>
-        </div>
-        <div class="copy-row">
-          <label class="small muted" for="sc-auth">2. Authorization header</label>
-          <div class="copy-field"><input id="sc-auth" class="input mono" readonly value="Bearer ••••••••" /><button class="btn btn-ghost" id="sc-auth-copy" type="button">Copy</button></div>
-          <p class="help-warn small">This is your access key. Anyone with it can read your documents. Paste it only into the Shortcut.</p>
-        </div>
-        <p class="small muted">Then in any app (Files, Photos, Mail, WhatsApp) tap Share, then <b>Save to DocSync</b>. On an iPad, write <code>iPad</code> instead of <code>iPhone</code> in the message. Full guide: docs/IOS_SHORTCUT.md in the repo.</p>
-      </section>
-
-      <section class="tab-panel" data-panel="android" hidden>
-        <ol class="steps small">
-          <li>Open this page in <b>Chrome</b>.</li>
-          <li>Tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>, then <b>Install</b>).</li>
-          <li>Done. In any app tap <b>Share</b> and pick <b>DocSync</b>. The files upload as soon as DocSync opens.</li>
-        </ol>
-        <p class="small muted">If DocSync doesn't appear in the Share menu, remove the home screen icon and install it again from Chrome.</p>
-      </section>
-    </div>
-  </div>
-
-  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" class="toast-action" type="button" hidden></button></div>
 
   <script type="module" src="assets/app.js"></script>
 </body>

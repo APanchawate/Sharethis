@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 (2026-10-26)
+
+- Renamed to "a really helpful tool"; subtle Saurashtra / Kathiyawad design (bandhani strip, kumkum + haldi accents, new icon)
+- Favourites (heart), synced across devices via `.app/state.json`, pinned on top, own chip
+- ⋯ actions menu (bottom sheet on phones): Preview, Favourite, Copy, Send to an app, Download, Rename, Delete
+- Rename in one commit via Git Data API, keeps origin and favourite
+- Undo delete
+- Copy to clipboard (images as PNG, text); Send to an app via the system share sheet
+- Tap previews only types the browser can show; others open the menu
+- Instant preview: per-device file cache by sha, prefetch on hover/touch, warm favourites, list drawn from cache on start
+- Exact-duplicate detection before upload; paste (Ctrl+V) to upload
+- Lock now wipes cached files from the device
+- Removed: iOS Shortcut guide, Android share target, service worker
+
 ## 1.1.0 (2026-10-26)
 
 - Auto categories from file names (ID & Visa, Work, Education, Money, Home, Photos, Other), English + German keywords

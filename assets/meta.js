@@ -50,11 +50,19 @@ export async function resolveMeta(vault, files) {
 
   const want = new Map(files.filter((f) => cache[f.path]?.sha !== f.sha).map((f) => [f.name, f]));
 
-  // 1. scan the folder history (one call per 100 commits)
+  // 1. scan the folder history (one call per 100 commits, newest first).
+  //    "Rename A -> B": the file now called B was uploaded as A, so keep
+  //    looking further back for "Upload A".
   for (let page = 1; page <= MAX_PAGES && want.size; page++) {
     const commits = await vault.history(page);
     for (const c of commits) {
       const p = parseCommit(c.message);
+      if (p?.action === "Rename" && want.has(p.name)) {
+        const f = want.get(p.name);
+        want.delete(p.name);
+        want.set(p.from, f);
+        continue;
+      }
       if (p?.action !== "Upload" || !want.has(p.name)) continue;
       const f = want.get(p.name);
       cache[f.path] = { sha: f.sha, date: c.date, device: p.device || "Unknown", via: p.via || "upload" };
