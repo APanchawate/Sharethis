@@ -93,6 +93,26 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 
 .container { max-width: 760px; margin: 0 auto; padding: 20px 16px 64px; }
 
+/* ---------- Section tabs: Documents | Clipboard ---------- */
+.tabs { display: flex; gap: 4px; margin: -4px 0 20px; border-bottom: 1px solid var(--border); }
+.tab {
+  position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 46px; padding: 0 12px; border: 0; background: none; cursor: pointer;
+  font: 500 15px var(--font); color: var(--muted);
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); }
+/* the active tab gets a kumkum hem, like the border of a bandhani odhni */
+.tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 10%; right: 10%; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--kumkum);
+}
+.tab:focus-visible { outline: 2px solid var(--kumkum); outline-offset: -2px; border-radius: 10px; }
+@media (min-width: 601px) { .tab { flex: 0 0 auto; padding: 0 18px; } }
+.tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--haldi); box-shadow: 0 0 0 2px var(--bg); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.offscreen { position: fixed; top: 0; left: -9999px; opacity: 0; }
+
 /* ---------- Upload ---------- */
 .dropzone {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -173,6 +193,47 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 32px; color: var(--muted); }
 .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--text); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Clipboard ---------- */
+.clip-compose { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--subtle); }
+.clip-input {
+  display: block; width: 100%; min-height: 84px; max-height: 40vh; padding: 12px 14px; resize: vertical;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);
+  font: 16px/1.45 var(--font); outline: none;
+}
+.clip-input:focus { border-color: var(--kumkum); }
+.clip-compose-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.clip-compose-row .btn { white-space: nowrap; }
+.clip-compose-row .btn-primary { min-width: 96px; }
+#clip-paste { padding: 0 14px; }
+.clip-hint { margin: 10px 2px 0; }
+@media (max-width: 600px) { .clip-compose-row .btn { flex: 1; } }
+
+.clip-list { list-style: none; margin: 20px 0 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.clip-list:empty { display: none; }
+.clip { display: flex; align-items: flex-start; gap: 10px; padding: 12px 8px 12px 14px; border-top: 1px solid var(--border); }
+.clip:first-child { border-top: 0; }
+/* the newest clip is the one you usually want: give it a kumkum edge */
+.clip.latest { background: var(--kumkum-soft); box-shadow: inset 3px 0 0 var(--kumkum); }
+.clip-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.clip-text {
+  margin: 0; padding: 0; border: 0; background: none; text-align: left; color: var(--text); cursor: text;
+  font: 15px/1.45 var(--font); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden;
+}
+.clip-text.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; }
+.clip-text.is-link { color: var(--kumkum); }
+.clip-more { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--muted); font: 500 13px var(--font); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.clip-meta { font-size: 13px; color: var(--muted); }
+.clip-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.clip-copy { min-height: 38px; padding: 0 12px; font-size: 14px; gap: 6px; }
+.clip-copy svg { width: 18px; height: 18px; }
+.clip-copy.done { background: var(--text); border-color: var(--text); color: #fff; }
+.clip-actions a.icon-btn { text-decoration: none; }
+.clip-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 2px 0; }
+.link-btn { padding: 6px 0; border: 0; background: none; color: var(--muted); font: 500 14px var(--font); cursor: pointer; }
+.link-btn:hover { color: var(--danger); }
+.link-btn:focus-visible { outline: 2px solid var(--kumkum); outline-offset: 2px; border-radius: 4px; }
 
 /* ---------- Modals ---------- */
 .modal { position: fixed; inset: 0; z-index: 20; background: rgba(17,17,19,.35); display: grid; place-items: center; padding: 16px; }

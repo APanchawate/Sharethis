@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.0 (2026-10-28) - shared clipboard
+
+- New **Clipboard** tab: save text or a link on one device, copy it on another with one tap
+  - "Paste and save" reads this device's clipboard in one tap; Ctrl+V anywhere on the tab does the same; Ctrl+Enter saves from the box
+  - Newest clip highlighted with a filled Copy button; shows which device it came from and when
+  - Links get an Open button (http/https only); long clips fold to 4 lines with Show all
+  - Delete with Undo, Clear all (asks first) with Undo
+  - Same text again moves to the top instead of duplicating; max 50 clips, 10,000 characters each
+  - Checks for new clips every 10 s while open and whenever the app comes back to the front; a haldi dot on the tab when a clip arrives from another device
+  - `.../#clipboard` opens straight on it; Clipboard shortcut in the web app manifest; last tab remembered per device
+  - Pasting plain text on the Documents tab offers to save it to the clipboard
+- `state.js` refactored into a reusable `SyncedFile` engine; save errors on favourites are now reported instead of silently dropped
+- Lock also wipes the cached clipboard from the device
+- Generic confirm dialog (button names the action: Delete, Clear all)
+- Tests: 120 checks (clipboard save, copy, paste, sync from another device, simultaneous saves, dot, duplicates, size limit, delete/undo, clear/undo, #clipboard link, lock wipe); `CHROMIUM_PATH` env to test with an installed Chromium
+
 ## 1.3.0 (2026-10-26) - production release
 
 - Strict Content Security Policy on every page; setup page logic moved to `assets/setup.js` (no inline code)

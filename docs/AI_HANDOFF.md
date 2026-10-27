@@ -24,9 +24,10 @@ Paste this file (and whichever source files are relevant) into ChatGPT, Claude o
 - `assets/github.js` - `Vault` class. Add new GitHub API calls here, nowhere else.
 - `assets/organize.js` - pure functions (no DOM, no network): categories + keywords, smart search, sorting, device detection, commit-message parsing. Add categories/keywords here.
 - `assets/meta.js` - file origins from commit history, cached in localStorage.
-- `assets/state.js` - synced favourites in `.app/state.json`. Add new synced settings here (same op + retry pattern).
+- `assets/state.js` - `SyncedFile` engine (local-first change, save with sha, re-apply on 409/422) and `SharedState` favourites in `.app/state.json`. Build new synced data on `SyncedFile`; operations must be safe to run twice.
+- `assets/clips.js` - shared clipboard in `.app/clipboard.json` (`Clipboard extends SyncedFile`) plus pure helpers `clipLink`, `clipAge`, `normalizeClip`.
 - `assets/blobs.js` - file cache and prefetch. Keyed by sha; cleared on lock.
-- `assets/app.js` - UI. Sections are numbered 1 to 7 in comments; keep that order. Menu actions are wired in section 6.
+- `assets/app.js` - UI. Sections are numbered 1 to 8 in comments; keep that order. Menu actions are wired in section 6, the Clipboard tab (views, polling, copy/paste) in section 7.
 - Commit message contract: `Upload <name> [<device>, <via>]` and `Rename <old> -> <new> [<device>]`. `meta.js` depends on it; keep it backwards compatible.
 - `assets/crypto.js` - do not change the format without bumping `v` and keeping `v: 1` decryptable.
 - `tests/e2e.mjs` - Playwright test with a mocked GitHub API. Extend the mock when you add API calls, and add assertions for new features.
@@ -42,7 +43,7 @@ All checks must print `ok`. Look at `tests/screenshots/` for desktop and iPhone 
 
 ## Roadmap (ideas, in rough priority order)
 
-Done: search, sort, auto categories, origins (1.1); favourites, rename, copy, send, undo delete, duplicate check, paste, instant preview, new name and design (1.2). Removed in 1.2 on purpose: iOS Shortcut and Android share target (owner didn't want them).
+Done: search, sort, auto categories, origins (1.1); favourites, rename, copy, send, undo delete, duplicate check, paste, instant preview, new name and design (1.2); production hardening, CI (1.3); shared clipboard tab (1.4). Removed in 1.2 on purpose: iOS Shortcut and Android share target (owner didn't want them).
 
 1. **Expiry reminders** - optional expiry date per file in `state.json` (passport, visa, residence permit, insurance); a "Due soon" chip and a banner 60/30/7 days before.
 2. **Recent** - "Recently opened" chip from a per-device list (localStorage), so the last few files are one tap away.

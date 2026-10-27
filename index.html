@@ -52,46 +52,83 @@
     <div class="offline" id="offline" hidden>You're offline. Files you opened before still work.</div>
 
     <main class="container">
-      <!-- Upload: button, drop files anywhere, or paste -->
-      <section class="dropzone">
-        <label class="btn btn-primary btn-upload">
-          <svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
-          Upload documents
-          <input id="file-input" type="file" multiple hidden />
-        </label>
-        <p class="muted small desktop-only">or drop files anywhere, or paste with Ctrl+V</p>
+      <!-- Two sections: your documents, and a clipboard shared between devices -->
+      <div class="tabs" role="tablist" aria-label="Sections">
+        <button class="tab" role="tab" id="tab-docs" data-view="docs" aria-controls="docs-view" aria-selected="true" type="button">
+          <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>Documents
+        </button>
+        <button class="tab" role="tab" id="tab-clips" data-view="clips" aria-controls="clip-view" aria-selected="false" type="button" tabindex="-1">
+          <svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 10h6M9 14h6"/></svg>Clipboard<span class="tab-dot" id="clip-dot" hidden><span class="sr-only">(new)</span></span>
+        </button>
+      </div>
+
+      <section id="docs-view" role="tabpanel" aria-labelledby="tab-docs">
+        <!-- Upload: button, drop files anywhere, or paste -->
+        <section class="dropzone">
+          <label class="btn btn-primary btn-upload">
+            <svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+            Upload documents
+            <input id="file-input" type="file" multiple hidden />
+          </label>
+          <p class="muted small desktop-only">or drop files anywhere, or paste with Ctrl+V</p>
+        </section>
+
+        <!-- Upload progress -->
+        <ul id="queue" class="queue" aria-live="polite"></ul>
+
+        <!-- Search + sort -->
+        <div class="toolbar">
+          <div class="search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input id="search" class="input" type="search" placeholder="Search: passport, pdf, iphone…" autocomplete="off" enterkeyhint="search" />
+          </div>
+          <select id="sort" class="select" aria-label="Sort by">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="name">Name</option>
+            <option value="size">Largest</option>
+          </select>
+        </div>
+
+        <!-- Favourites + auto categories -->
+        <nav id="chips" class="chips" aria-label="Categories"></nav>
+
+        <ul id="file-list" class="file-list"></ul>
+        <div id="empty" class="empty" hidden>
+          <p>No documents yet.</p>
+          <p class="muted small">Upload something and it will show up on every device.</p>
+        </div>
+        <div id="no-results" class="empty" hidden>
+          <p id="no-results-text"></p>
+          <button class="btn btn-ghost" id="clear-search" type="button">Show all documents</button>
+        </div>
+        <div id="loading" class="loading" hidden><span class="spinner"></span> Loading…</div>
       </section>
 
-      <!-- Upload progress -->
-      <ul id="queue" class="queue" aria-live="polite"></ul>
+      <!-- ============ CLIPBOARD ============ -->
+      <section id="clip-view" class="clip-view" role="tabpanel" aria-labelledby="tab-clips" hidden>
+        <form id="clip-form" class="clip-compose">
+          <label for="clip-input" class="sr-only">Text to put on the clipboard</label>
+          <textarea id="clip-input" class="clip-input" rows="3" placeholder="Type or paste text or a link" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"></textarea>
+          <div class="clip-compose-row">
+            <button class="btn btn-ghost" id="clip-paste" type="button">
+              <svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M12 9v7M9 13l3 3 3-3"/></svg>Paste and save
+            </button>
+            <button class="btn btn-primary" id="clip-save" type="submit">Save</button>
+          </div>
+          <p class="muted small clip-hint" id="clip-hint">Saved clips appear on all your devices. Tap Copy there.</p>
+        </form>
 
-      <!-- Search + sort -->
-      <div class="toolbar">
-        <div class="search">
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input id="search" class="input" type="search" placeholder="Search: passport, pdf, iphone…" autocomplete="off" enterkeyhint="search" />
+        <ul id="clip-list" class="clip-list" aria-live="polite"></ul>
+        <div id="clip-empty" class="empty" hidden>
+          <p>Your clipboard is empty.</p>
+          <p class="muted small">Save a link or some text here, then copy it on your phone or laptop.</p>
         </div>
-        <select id="sort" class="select" aria-label="Sort by">
-          <option value="newest">Newest</option>
-          <option value="oldest">Oldest</option>
-          <option value="name">Name</option>
-          <option value="size">Largest</option>
-        </select>
-      </div>
-
-      <!-- Favourites + auto categories -->
-      <nav id="chips" class="chips" aria-label="Categories"></nav>
-
-      <ul id="file-list" class="file-list"></ul>
-      <div id="empty" class="empty" hidden>
-        <p>No documents yet.</p>
-        <p class="muted small">Upload something and it will show up on every device.</p>
-      </div>
-      <div id="no-results" class="empty" hidden>
-        <p id="no-results-text"></p>
-        <button class="btn btn-ghost" id="clear-search" type="button">Show all documents</button>
-      </div>
-      <div id="loading" class="loading" hidden><span class="spinner"></span> Loading…</div>
+        <div class="clip-foot" id="clip-foot" hidden>
+          <span class="muted small" id="clip-count"></span>
+          <button class="link-btn" id="clip-clear" type="button">Clear all</button>
+        </div>
+      </section>
     </main>
   </div>
 

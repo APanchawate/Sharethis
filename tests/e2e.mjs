@@ -8,6 +8,7 @@ import { chromium, devices } from "playwright";
 import { mkdirSync } from "fs";
 import { createHash } from "crypto";
 import * as org from "../assets/organize.js";
+import * as clipsLib from "../assets/clips.js";
 
 const BASE = process.env.BASE || "http://localhost:8080";
 const SHOTS = new URL("./screenshots/", import.meta.url).pathname;
@@ -33,6 +34,12 @@ const SAFARI = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebK
 const CHROME_ANDROID = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36";
 assert(org.canPreview("a.heic", SAFARI) && !org.canPreview("a.heic", CHROME_ANDROID), "canPreview: HEIC only in Safari");
 assert(!org.canPreview("a.pdf", CHROME_ANDROID) && !org.canPreview("a.docx", SAFARI), "canPreview: no PDF on Android, no Word anywhere");
+assert(clipsLib.clipLink("https://example.com/a?b=1") === "https://example.com/a?b=1", "clipLink: a web link is a link");
+assert(clipsLib.clipLink("www.attocube.com") === "https://www.attocube.com/", "clipLink: www. gets https://");
+assert(clipsLib.clipLink("javascript:alert(1)") === null && clipsLib.clipLink("see https://x.com") === null, "clipLink: no javascript: links, no links inside sentences");
+assert(clipsLib.normalizeClip("  \r\n line 1\r\nline 2 \n") === "line 1\nline 2", "normalizeClip: trims and unifies line endings");
+const NOW = new Date("2026-10-28T12:00:00Z");
+assert(clipsLib.clipAge("2026-10-28T11:59:40Z", NOW) === "just now" && clipsLib.clipAge("2026-10-28T11:55:00Z", NOW) === "5 min ago", "clipAge: just now, minutes");
 
 // ---------------------------------------------------------------- fake GitHub
 // Behaves like the real API for everything the app uses, including real git
@@ -143,9 +150,19 @@ async function mockGitHub(context) {
   });
 }
 const lastMessage = (name) => commits.find((c) => c.path === "files/" + name)?.message || "";
+// Wait (in Node) until the fake vault reaches a state
+const until = async (cond, ms = 8000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 50)); };
 const favorites = () => JSON.parse(vault.get(".app/state.json")?.buf.toString() || '{"favorites":[]}').favorites;
+const clipItems = () => JSON.parse(vault.get(".app/clipboard.json")?.buf.toString() || '{"items":[]}').items;
+// Another device saving a clip (written straight into the fake vault)
+let remoteSeq = 0;
+const remoteClip = (text, device = "Windows PC") => {
+  const items = [{ id: "remote" + ++remoteSeq, text, at: new Date().toISOString(), device }, ...clipItems()];
+  setFile(".app/clipboard.json", Buffer.from(JSON.stringify({ version: 1, items })));
+};
 
-const browser = await chromium.launch();
+// CHROMIUM_PATH lets you test with a Chromium you already have installed
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 
 // ---------------------------------------------------------------- setup page
 const ctx = await browser.newContext();
@@ -325,6 +342,117 @@ for (const [label, opts, device] of [
   await p.waitForFunction(() => document.querySelectorAll(".file").length === 7, null, { timeout: 10000 });
   assert(vault.has("files/notes (2).txt"), `${label}: undo brings the deleted file back`);
 
+  // ---------------------------------------------------------------- clipboard
+  const clipTexts = () => p.$$eval("#clip-list .clip-text", (els) => els.map((e) => e.textContent));
+  await p.click("#tab-clips");
+  await p.waitForSelector("#clip-view:not([hidden])");
+  assert(new URL(p.url()).hash === "#clipboard" && (await p.isVisible("#clip-empty")), `${label}: Clipboard tab opens (empty, bookmarkable #clipboard)`);
+  assert(await p.isHidden("#docs-view"), `${label}: documents are hidden on the Clipboard tab`);
+
+  // save a link from the box
+  const LINK = "https://jobs.example.com/offer?id=42";
+  await p.fill("#clip-input", LINK);
+  await p.click("#clip-save");
+  await p.waitForFunction(() => document.querySelectorAll("#clip-list .clip").length === 1);
+  await p.waitForFunction(() => document.getElementById("toast-text").textContent.includes("other devices"), null, { timeout: 5000 });
+  assert(clipItems()[0]?.text === LINK && clipItems()[0]?.device === device, `${label}: clip saved to the vault with device "${device}"`);
+  assert((await p.inputValue("#clip-input")) === "", `${label}: box is cleared after saving`);
+  assert((await p.getAttribute("#clip-list .clip a.icon-btn", "href")) === LINK, `${label}: links get an Open button`);
+
+  // copy puts the exact text on this device's clipboard
+  await p.click("#clip-list .clip.latest .clip-copy");
+  await p.waitForFunction(() => document.querySelector("#clip-list .clip-copy").textContent.includes("Copied"));
+  assert((await p.evaluate(() => navigator.clipboard.readText())) === LINK, `${label}: Copy puts the clip on the system clipboard`);
+
+  // a clip from another device shows up on refresh, on top, highlighted
+  remoteClip("WLAN Passwort: blue-tram-42");
+  await p.click("#refresh-btn");
+  await p.waitForFunction(() => document.querySelector("#clip-list .clip.latest .clip-meta")?.textContent.includes("Windows PC"));
+  assert((await clipTexts())[0] === "WLAN Passwort: blue-tram-42", `${label}: clip from another device appears on top`);
+
+  // the haldi dot tells you a new clip arrived while on Documents
+  await p.click("#tab-docs");
+  assert(await p.isHidden("#clip-dot"), `${label}: no dot for clips already seen`);
+  remoteClip("Termin Bürgeramt 14:30");
+  await p.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await p.waitForSelector("#clip-dot:not([hidden])");
+  assert(true, `${label}: new clip from another device shows a dot on the Clipboard tab`);
+  await p.click("#tab-clips");
+  assert(await p.isHidden("#clip-dot"), `${label}: opening the Clipboard clears the dot`);
+
+  // Ctrl+V anywhere on the Clipboard tab saves the text
+  await p.evaluate(() => {
+    document.activeElement?.blur();
+    const dt = new DataTransfer();
+    dt.setData("text/plain", "  pasted from the laptop  ");
+    document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await p.waitForFunction(() => document.querySelector("#clip-list .clip-text")?.textContent === "pasted from the laptop");
+  await p.waitForTimeout(400);
+  assert(clipItems()[0]?.text === "pasted from the laptop", `${label}: paste on the Clipboard tab saves (trimmed)`);
+
+  // two devices saving at the same moment: neither clip is lost
+  remoteClip("saved on the PC at the same time");          // the app's copy is now stale
+  await p.fill("#clip-input", "saved on this device");
+  await p.click("#clip-save");
+  await until(() => clipItems()[0]?.text === "saved on this device");
+  const both = clipItems().map((i) => i.text);
+  assert(both.includes("saved on the PC at the same time") && both[0] === "saved on this device", `${label}: simultaneous saves on two devices both survive`);
+
+  // saving the same text again moves it to the top instead of duplicating it
+  await p.fill("#clip-input", LINK);
+  await p.click("#clip-save");
+  await p.waitForTimeout(500);
+  assert(clipItems()[0].text === LINK && clipItems().filter((i) => i.text === LINK).length === 1, `${label}: same text again moves to the top, no duplicate`);
+
+  // too long is refused with a clear message
+  const countBefore = clipItems().length;
+  await p.fill("#clip-input", "x".repeat(clipsLib.MAX_CLIP_CHARS + 1));
+  await p.click("#clip-save");
+  await p.waitForFunction(() => document.querySelector("#toast.err")?.textContent.includes("too long"));
+  assert(clipItems().length === countBefore, `${label}: over-long clip refused`);
+  await p.fill("#clip-input", "");
+
+  // long clips are clamped with Show all
+  remoteClip(Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of a long note`).join("\n"));
+  await p.click("#refresh-btn");
+  await p.waitForSelector("#clip-list .clip.latest .clip-more");
+  await p.click("#clip-list .clip.latest .clip-more");
+  assert(await p.$eval("#clip-list .clip.latest .clip-text", (e) => e.classList.contains("open")), `${label}: long clip expands with Show all`);
+  await p.screenshot({ path: SHOTS + `${label}-5-clipboard.png`, fullPage: true });
+
+  // delete + undo
+  const n = clipItems().length;
+  await p.locator("#clip-list .clip", { hasText: "Termin Bürgeramt" }).getByLabel("Delete clip").click();
+  await p.waitForFunction((k) => document.querySelectorAll("#clip-list .clip").length === k, n - 1);
+  await p.waitForTimeout(400);
+  assert(!clipItems().some((i) => i.text.startsWith("Termin")), `${label}: delete clip`);
+  await p.click("#toast-action");
+  await p.waitForFunction((k) => document.querySelectorAll("#clip-list .clip").length === k, n);
+  await p.waitForTimeout(400);
+  assert(clipItems().some((i) => i.text.startsWith("Termin")) && clipItems().length === n, `${label}: undo brings the clip back`);
+
+  // clear all (asks first) + undo
+  await p.click("#clip-clear");
+  await p.waitForSelector("#confirm:not([hidden])");
+  assert((await p.textContent("#confirm-ok")) === "Clear all", `${label}: clear all asks first`);
+  await p.click("#confirm-ok");
+  await p.waitForSelector("#clip-empty:not([hidden])");
+  await p.waitForTimeout(400);
+  assert(clipItems().length === 0, `${label}: clear all empties the clipboard everywhere`);
+  await p.click("#toast-action");
+  await p.waitForFunction((k) => document.querySelectorAll("#clip-list .clip").length === k, n);
+  await p.waitForTimeout(400);
+  assert(clipItems().length === n && clipItems()[0].text.startsWith("Line 1"), `${label}: undo restores every clip in order`);
+
+  // a #clipboard link opens straight on the Clipboard, drawn from cache
+  await p.goto(BASE + "/#clipboard");
+  await p.waitForSelector("#clip-view:not([hidden]) .clip");
+  assert(await p.isHidden("#docs-view"), `${label}: opening .../#clipboard goes straight to the Clipboard`);
+  await p.click("#tab-docs");
+  await p.waitForSelector("#docs-view:not([hidden]) .file");
+  assert(await p.isHidden("#clip-view"), `${label}: back to Documents`);
+
   // reload: remembered device, list drawn instantly from cache
   await p.reload();
   await p.waitForSelector("#app:not([hidden]) .file");
@@ -333,8 +461,8 @@ for (const [label, opts, device] of [
   // lock wipes local copies
   await p.click("#logout-btn");
   await p.waitForSelector("#lock:not([hidden])");
-  const leftovers = await p.evaluate(async () => (await caches.keys()).length + (localStorage.getItem("docsync.list.v1") ? 1 : 0));
-  assert(leftovers === 0, `${label}: lock removes cached files and list from the device`);
+  const leftovers = await p.evaluate(async () => (await caches.keys()).length + ["docsync.list.v1", "docsync.clips.v1", "docsync.state.v1"].filter((k) => localStorage.getItem(k)).length);
+  assert(leftovers === 0, `${label}: lock removes cached files, list and clipboard from the device`);
 
   // reset the fake vault for the next round
   for (const k of [...vault.keys()]) if (k.startsWith("files/") || k.startsWith(".app/")) vault.delete(k);

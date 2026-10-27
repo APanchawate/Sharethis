@@ -19,7 +19,7 @@
 
 ---
 
-A private document locker that lives entirely on GitHub. Open one link on your phone or laptop, type your password once, and your passport scan, CV, contracts and certificates are there: upload, preview, favourite, rename, copy, send, download. Everything syncs to every other device.
+A private document locker that lives entirely on GitHub. Open one link on your phone or laptop, type your password once, and your passport scan, CV, contracts and certificates are there: upload, preview, favourite, rename, copy, send, download. A shared clipboard moves links and text between your laptop and phone. Everything syncs to every other device.
 
 No server. No database. No monthly bill. No build step.
 
@@ -47,6 +47,7 @@ No server. No database. No monthly bill. No build step.
 | **Hands files over** | Copy images and text to the clipboard, or send the real file to WhatsApp, Mail or AirDrop with the phone's share sheet. |
 | **Forgiving** | Rename in one tap. Deleted by mistake? Undo. Every change is a git commit, so nothing is ever truly lost. |
 | **Shows where files came from** | Each file shows the device it was uploaded from and when. |
+| **Shared clipboard** | Copy a link or text on your laptop, open the Clipboard tab on your phone and tap Copy (or the other way round). Paste with one tap or Ctrl+V; links get an Open button; delete with Undo. Bookmark `.../#clipboard` to land straight on it. |
 
 ## How it stays private
 

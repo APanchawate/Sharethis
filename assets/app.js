@@ -6,7 +6,8 @@
 //   4. upload: button, drop anywhere, paste; skips exact duplicates
 //   5. file actions: preview, favourite, copy, send to app, download, rename, delete (+ undo)
 //   6. actions menu (the ⋯ button)
-//   7. small helpers (toast, modal, formatting)
+//   7. clipboard: texts and links shared between your devices (+ the Documents / Clipboard tabs)
+//   8. small helpers (toast, modal, formatting)
 
 import config from "../config.js";
 import { Vault } from "./github.js";
@@ -14,17 +15,22 @@ import { decryptToken } from "./crypto.js";
 import { ALL_CATEGORIES, categorize, kindOf, extOf, canPreview, searchFiles, sortFiles, thisDevice, formatDate } from "./organize.js";
 import { cachedMeta, rememberMeta, resolveMeta } from "./meta.js";
 import { SharedState, clearLocalState } from "./state.js";
+import { Clipboard, MAX_CLIPS, clipLink, clipAge, normalizeClip, clearLocalClips } from "./clips.js";
 import { getBlob, prefetch, isReady, readyBlob, rememberBlob, clearBlobs, gitBlobSha } from "./blobs.js";
 
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "docsync.token";
 const SORT_KEY = "docsync.sort";
 const LIST_KEY = "docsync.list.v1";
+const VIEW_KEY = "docsync.view";          // last open tab on this device
+const SEEN_KEY = "docsync.clips.seen";    // newest clip this device has seen
+const CLIP_POLL_MS = 10000;               // check for new clips while the Clipboard is open
 const MAX_BYTES = (config.maxFileMB || 25) * 1024 * 1024;
 const DEVICE = thisDevice();
 
 let vault = null;      // Vault instance once unlocked
 let state = null;      // SharedState (favourites), synced through the vault
+let clips = null;      // Clipboard (shared texts and links), synced through the vault
 let files = [];        // raw list from GitHub: [{name, path, sha, size}]
 let meta = {};         // path -> {date, device, via}
 const view = { query: "", category: "all", sort: "newest" };
@@ -54,6 +60,8 @@ function makeVault(t) {
 function showLock(message = "") {
   vault = null;
   state = null;
+  clips = null;
+  stopClipPoll();
   $("app").hidden = true;
   $("lock").hidden = false;
   const usePassword = !!config.encryptedToken;
@@ -97,17 +105,23 @@ $("lock-form").addEventListener("submit", async (e) => {
 $("logout-btn").addEventListener("click", async () => {
   tokenStore.clear();
   local.del(LIST_KEY);
+  local.del(SEEN_KEY);
   clearLocalState();
+  clearLocalClips();
   await clearBlobs();
   files = [];
-  showLock("Locked. Nothing from your documents is left on this device.");
+  showLock("Locked. Nothing from your documents or clipboard is left on this device.");
 });
 
 function openApp(v) {
   vault = v;
   state = new SharedState(v);
+  clips = new Clipboard(v);
   $("lock").hidden = true;
   $("app").hidden = false;
+  renderClips();            // last known clips, instantly
+  setView(startView());     // #clipboard link, else the tab used last on this device
+  refreshClips();
   // Instant start: draw the last known list right away, then refresh
   const cached = safe(() => JSON.parse(local.get(LIST_KEY)));
   if (Array.isArray(cached) && cached.length) {
@@ -236,7 +250,7 @@ function fileRow(f) {
   return li;
 }
 
-$("refresh-btn").addEventListener("click", () => loadFiles());
+$("refresh-btn").addEventListener("click", () => (currentView === "clips" ? refreshClips({ announce: true }) : loadFiles()));
 
 let searchTimer;
 $("search").addEventListener("input", (e) => {
@@ -295,7 +309,13 @@ document.addEventListener("paste", (e) => {
     // pasted screenshots are all called "image.png": give them a useful name
     f.name === "image.png" ? new File([f], `Screenshot ${new Date().toISOString().slice(0, 16).replace("T", " ").replace(":", ".")}.png`, { type: f.type }) : f
   );
-  if (pasted.length) { e.preventDefault(); uploadAll(pasted, "paste"); }
+  if (pasted.length) { e.preventDefault(); uploadAll(pasted, "paste"); return; }
+  // Plain text: goes to the shared clipboard (asks first on the Documents tab)
+  const text = e.clipboardData?.getData("text/plain");
+  if (!normalizeClip(text)) return;
+  e.preventDefault();
+  if (currentView === "clips") saveClip(text);
+  else toast("Save the pasted text to your clipboard?", false, { label: "Save", run: () => saveClip(text) });
 });
 
 let uploading = Promise.resolve();
@@ -556,10 +576,7 @@ $("rename-form").addEventListener("submit", async (e) => {
 
 // ----- Delete, with Undo -----
 function askDelete(f) {
-  $("confirm-text").textContent = `Delete "${f.name}" from all devices?`;
-  openModal("confirm");
-  $("confirm-ok").onclick = async () => {
-    closeModal("confirm");
+  confirmAction(`Delete "${f.name}" from all devices?`, "Delete", async () => {
     const wasFav = state.isFavorite(f.path);
     const m = meta[f.path];
     try {
@@ -572,7 +589,7 @@ function askDelete(f) {
       handleError(err);
       loadFiles({ quiet: true });
     }
-  };
+  });
 }
 
 // git still has the file's bytes, so undo just points the path back at them
@@ -646,12 +663,309 @@ $("menu").addEventListener("click", (e) => {
 window.addEventListener("resize", closeMenu);
 
 // ---------------------------------------------------------------------------
-// 7. Helpers
+// 7. Clipboard. Save a text or link on one device, copy it on another.
+//    Lives in .app/clipboard.json (see clips.js). While the Clipboard tab is
+//    open it checks for new clips every few seconds; on the Documents tab a
+//    small haldi dot says a new clip arrived from another device.
+// ---------------------------------------------------------------------------
+let currentView = "docs";
+
+function startView() {
+  if (location.hash === "#clipboard") return "clips";
+  if (location.hash === "#documents") return "docs";
+  return local.get(VIEW_KEY) === "clips" ? "clips" : "docs";
+}
+
+function setView(name, { focus = false } = {}) {
+  currentView = name === "clips" ? "clips" : "docs";
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const on = tab.dataset.view === currentView;
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+  });
+  $("docs-view").hidden = currentView !== "docs";
+  $("clip-view").hidden = currentView !== "clips";
+  local.set(VIEW_KEY, currentView);
+  // keep the address bookmarkable: .../#clipboard opens straight here
+  const hash = currentView === "clips" ? "#clipboard" : "";
+  if (location.hash !== hash) safe(() => history.replaceState(null, "", location.pathname + location.search + hash));
+  if (focus) document.querySelector(`.tab[data-view="${currentView}"]`)?.focus();
+  if (currentView === "clips") {
+    markClipsSeen();
+    markLongClips();
+    refreshClips();
+  }
+  scheduleClipPoll();
+}
+
+document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => setView(tab.dataset.view)));
+// arrow keys move between tabs, as screen reader users expect
+$("tab-docs").parentElement.addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  e.preventDefault();
+  setView(currentView === "docs" ? "clips" : "docs", { focus: true });
+});
+window.addEventListener("hashchange", () => {
+  if (vault && ["#clipboard", "#documents"].includes(location.hash)) setView(startView());
+});
+
+// ----- Render -----
+const COPY_ICON = '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+const OPEN_ICON = '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
+const TRASH = '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>';
+const openClips = new Set(); // ids of long clips the user expanded
+
+function renderClips() {
+  if (!clips) return;
+  const items = clips.items;
+  $("clip-list").replaceChildren(...items.map((item, i) => clipRow(item, i === 0)));
+  $("clip-empty").hidden = items.length > 0;
+  $("clip-foot").hidden = items.length === 0;
+  $("clip-count").textContent = `${items.length} clip${items.length === 1 ? "" : "s"}. The newest ${MAX_CLIPS} are kept.`;
+  markLongClips();
+  updateClipDot();
+}
+
+function clipRow(item, latest) {
+  const li = el("li", latest ? "clip latest" : "clip");
+  li.dataset.id = item.id;
+  const link = clipLink(item.text);
+
+  const body = el("div", "clip-body");
+  const text = el("p", `clip-text${link ? " is-link" : ""}${openClips.has(item.id) ? " open" : ""}`, item.text);
+  body.append(text, el("span", "clip-meta", [item.device, clipAge(item.at)].filter(Boolean).join(" · ")));
+
+  const actions = el("div", "clip-actions");
+  const copy = el("button", `btn ${latest ? "btn-primary" : "btn-ghost"} clip-copy`);
+  copy.type = "button";
+  copy.title = "Copy to this device's clipboard";
+  setCopyLabel(copy, false);
+  copy.addEventListener("click", () => copyClip(item, copy));
+  // Open sits left of Copy, so every Copy button lines up in one column
+  if (link) {
+    const a = el("a", "icon-btn");
+    a.href = link;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = "Open link";
+    a.setAttribute("aria-label", "Open link");
+    a.innerHTML = OPEN_ICON;
+    actions.append(a);
+  }
+  actions.append(copy, iconButton("Delete clip", TRASH, () => deleteClip(item)));
+
+  li.append(body, actions);
+  return li;
+}
+
+function setCopyLabel(btn, done) {
+  btn.classList.toggle("done", done);
+  btn.innerHTML = done ? CHECK_ICON : COPY_ICON;
+  btn.append(done ? "Copied" : "Copy");
+}
+
+// Long clips show 4 lines plus "Show all". Needs layout, so only when visible.
+function markLongClips() {
+  if (!clips || $("clip-view").hidden) return;
+  $("clip-list").querySelectorAll(".clip").forEach((li) => {
+    const text = li.querySelector(".clip-text");
+    const existing = li.querySelector(".clip-more");
+    const long = text.classList.contains("open") || text.scrollHeight > text.clientHeight + 2;
+    if (!long || existing) return;
+    const more = el("button", "clip-more", text.classList.contains("open") ? "Show less" : "Show all");
+    more.type = "button";
+    more.addEventListener("click", () => {
+      const open = text.classList.toggle("open");
+      if (open) openClips.add(li.dataset.id); else openClips.delete(li.dataset.id);
+      more.textContent = open ? "Show less" : "Show all";
+    });
+    text.after(more);
+  });
+}
+
+// Times like "2 min ago" go stale; refresh them without rebuilding the list
+function updateClipAges() {
+  if (!clips) return;
+  $("clip-list").querySelectorAll(".clip").forEach((li) => {
+    const item = clips.items.find((i) => i.id === li.dataset.id);
+    if (item) li.querySelector(".clip-meta").textContent = [item.device, clipAge(item.at)].filter(Boolean).join(" · ");
+  });
+}
+
+// ----- Sync -----
+let pollTimer = null;
+let refreshingClips = false;
+
+function scheduleClipPoll() {
+  stopClipPoll();
+  if (vault && currentView === "clips" && document.visibilityState === "visible") {
+    pollTimer = setInterval(() => refreshClips(), CLIP_POLL_MS);
+  }
+}
+function stopClipPoll() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+async function refreshClips({ announce = false } = {}) {
+  if (!clips || refreshingClips) return;
+  refreshingClips = true;
+  const signature = () => clips.items.map((i) => i.id).join(",");
+  const before = signature();
+  try {
+    await clips.refresh();
+    if (signature() !== before) renderClips();
+    else updateClipAges();
+    if (currentView === "clips") markClipsSeen();
+    else updateClipDot();
+    if (announce) toast("Clipboard is up to date");
+  } catch (err) {
+    // Background checks stay quiet (the next one retries); a tap on Refresh says what happened
+    if (err.status === 401 || announce) handleError(err);
+  } finally {
+    refreshingClips = false;
+  }
+}
+
+function markClipsSeen() {
+  const newest = clips?.items[0];
+  if (newest) local.set(SEEN_KEY, newest.id);
+  updateClipDot();
+}
+
+function updateClipDot() {
+  const newest = clips?.items[0];
+  $("clip-dot").hidden = !newest || currentView === "clips" || newest.device === DEVICE || newest.id === local.get(SEEN_KEY);
+}
+
+// Coming back to the app (switching from another app or tab) is exactly when
+// a clip from the other device is expected, so check right away.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshClips();
+  scheduleClipPoll();
+});
+window.addEventListener("focus", () => refreshClips());
+
+// ----- Save -----
+function saveClip(text) {
+  if (!clips) return null;
+  let added;
+  try {
+    added = clips.add(text, DEVICE);
+  } catch (err) {
+    toast(err.message, true);
+    return null;
+  }
+  renderClips();
+  markClipsSeen();
+  added.save
+    .then(() => toast("Saved. It's on your other devices now."))
+    .catch((err) => {
+      handleError(err);
+      // put the text back so nothing typed is lost, and show what GitHub really has
+      if (!$("clip-input").value) $("clip-input").value = added.item.text;
+      refreshClips();
+    });
+  return added.item;
+}
+
+$("clip-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = $("clip-input");
+  if (saveClip(input.value)) {
+    input.value = "";
+    input.blur(); // closes the phone keyboard so the list is visible
+  }
+});
+
+// Ctrl+Enter / Cmd+Enter saves, like sending a message
+$("clip-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    $("clip-form").requestSubmit();
+  }
+});
+
+// One tap: read this device's clipboard and save it
+$("clip-paste").hidden = !navigator.clipboard?.readText;
+$("clip-paste").addEventListener("click", async () => {
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    return toast("Your browser didn't allow reading the clipboard. Paste into the box instead.", true);
+  }
+  if (!normalizeClip(text)) return toast("There's no text on your clipboard to save.", true);
+  saveClip(text);
+});
+
+// ----- Copy, delete, clear -----
+async function copyClip(item, btn) {
+  if (!(await writeClipboardText(item.text))) {
+    return toast("Your browser blocked the copy. Select the text and copy it by hand.", true);
+  }
+  setCopyLabel(btn, true);
+  setTimeout(() => btn.isConnected && setCopyLabel(btn, false), 1600);
+}
+
+// The modern API first; the old select-and-copy trick for older browsers.
+// Must run straight from the tap (iPhone only allows copying inside a tap).
+async function writeClipboardText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* fall back below */ }
+  const ta = el("textarea", "offscreen");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  document.body.append(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  const ok = safe(() => document.execCommand("copy")) || false;
+  ta.remove();
+  return ok;
+}
+
+function deleteClip(item) {
+  const index = clips.items.findIndex((i) => i.id === item.id);
+  clips.remove(item.id, DEVICE).catch((err) => { handleError(err); refreshClips(); });
+  renderClips();
+  toast("Clip deleted", false, { label: "Undo", run: () => restoreClips([{ item, index }]) });
+}
+
+function restoreClips(entries) {
+  if (!clips) return;
+  clips.restore(entries, DEVICE).catch((err) => { handleError(err); refreshClips(); });
+  renderClips();
+}
+
+$("clip-clear").addEventListener("click", () => {
+  const n = clips?.items.length || 0;
+  if (!n) return;
+  confirmAction(`Clear all ${n} clip${n === 1 ? "" : "s"} from every device?`, "Clear all", () => {
+    const entries = clips.items.map((item, index) => ({ item, index }));
+    clips.clear(DEVICE).catch((err) => { handleError(err); refreshClips(); });
+    renderClips();
+    toast("Clipboard cleared", false, { label: "Undo", run: () => restoreClips(entries) });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Helpers
 // ---------------------------------------------------------------------------
 function openModal(id) { $(id).hidden = false; }
 function closeModal(id) {
   $(id).hidden = true;
   if (id === "preview") closePreview();
+}
+
+/** Ask before something destructive. `label` names the action: "Delete", "Clear all". */
+function confirmAction(text, label, run) {
+  $("confirm-text").textContent = text;
+  $("confirm-ok").textContent = label;
+  $("confirm-ok").onclick = () => { closeModal("confirm"); run(); };
+  openModal("confirm");
 }
 document.querySelectorAll(".modal").forEach((m) => {
   m.addEventListener("click", (e) => {
@@ -664,7 +978,7 @@ document.addEventListener("keydown", (e) => {
     document.querySelectorAll(".modal:not([hidden])").forEach((m) => closeModal(m.id));
   }
   // "/" jumps to search, like on GitHub
-  if (e.key === "/" && vault && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); $("search").focus(); }
+  if (e.key === "/" && vault && currentView === "docs" && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName)) { e.preventDefault(); $("search").focus(); }
 });
 
 let toastTimer;

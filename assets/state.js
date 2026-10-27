@@ -1,36 +1,101 @@
 // state.js
-// Small shared state that must sync across devices: currently the list of
-// favourite files. Stored as JSON in the vault repo at STATE_PATH (outside
-// the documents folder, so it never shows up as a document):
+// Small JSON files in the vault that must sync across devices.
 //
-//   { "version": 1, "favorites": ["files/CV.pdf", "files/Passport.png"] }
+//   SyncedFile   the shared engine (load, change, save with conflict retry)
+//   SharedState  favourites, in .app/state.json
+//                { "version": 1, "favorites": ["files/CV.pdf"] }
+//   (clips.js builds the clipboard on the same engine, in .app/clipboard.json)
 //
-// Every change is an "operation" (a function that edits the state). It is
-// applied locally at once (so the heart fills instantly), then saved. If
+// Both files live outside the documents folder, so they never show up as a
+// document.
+//
+// Every change is an "operation" (a function that edits the data). It is
+// applied locally at once (so the UI updates instantly), then saved. If
 // another device saved in between (GitHub answers 409/422), we re-read the
 // file, apply the same operation again and retry. That way two devices can
-// favourite different files at the same time without losing either.
+// change things at the same time without losing either change. Operations
+// must therefore be safe to run twice (add-if-missing, remove-by-id).
 
-const STATE_PATH = ".app/state.json";
-const STATE_CACHE = "docsync.state.v1";
-
-const empty = () => ({ version: 1, favorites: [] });
-
-export class SharedState {
-  constructor(vault) {
+export class SyncedFile {
+  /**
+   * @param vault     Vault instance
+   * @param path      file in the vault, e.g. ".app/state.json"
+   * @param cacheKey  localStorage key for the offline / instant-start copy
+   * @param empty     () => fresh default data
+   */
+  constructor(vault, path, cacheKey, empty) {
     this.vault = vault;
+    this.path = path;
+    this.cacheKey = cacheKey;
+    this.empty = empty;
     this.sha = null;
-    this.data = readLocal() || empty();
+    this.data = { ...empty(), ...(readLocal(cacheKey) || {}) };
     this.queue = Promise.resolve();
+    this.pending = 0; // local changes not yet saved to GitHub
   }
 
   /** Fetch the latest from GitHub. */
   async load() {
-    const { data, sha } = await this.vault.readJSON(STATE_PATH);
-    this.data = { ...empty(), ...(data || {}) };
+    const { data, sha } = await this.vault.readJSON(this.path);
+    this.data = { ...this.empty(), ...(data || {}) };
     this.sha = sha;
-    writeLocal(this.data);
+    writeLocal(this.cacheKey, this.data);
     return this.data;
+  }
+
+  /**
+   * Like load(), but never while one of our own changes is still being
+   * saved: that would briefly drop the change from the screen. Returns
+   * true if the data was refreshed.
+   */
+  async refresh() {
+    if (this.pending) return false;
+    const before = this.sha;
+    await this.load();
+    if (this.pending) return false;
+    return this.sha !== before;
+  }
+
+  /** Apply `op` locally now, then save it (queued, with conflict retry). */
+  change(op, message) {
+    op(this.data);
+    writeLocal(this.cacheKey, this.data);
+    this.pending++;
+    this.queue = this.queue
+      .then(() => this.save(op, message))
+      .finally(() => { this.pending--; });
+    // keep the chain alive for the next change even if this save failed
+    const result = this.queue;
+    this.queue = this.queue.catch(() => {});
+    return result;
+  }
+
+  async save(op, message) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        this.sha = await this.vault.writeJSON(this.path, this.data, this.sha, message);
+        writeLocal(this.cacheKey, this.data);
+        return;
+      } catch (e) {
+        if (e.status !== 409 && e.status !== 422) throw e;
+        await this.load();   // someone else changed it: take theirs...
+        op(this.data);       // ...and re-apply ours on top
+      }
+    }
+    throw Object.assign(new Error("Another device kept saving at the same time. Please retry."), { status: 409 });
+  }
+
+  /** Forget the local copy (used by the lock button). */
+  forgetLocal() {
+    clearLocal(this.cacheKey);
+  }
+}
+
+const STATE_CACHE = "docsync.state.v1";
+
+export class SharedState extends SyncedFile {
+  constructor(vault) {
+    super(vault, ".app/state.json", STATE_CACHE, () => ({ version: 1, favorites: [] }));
   }
 
   isFavorite(path) {
@@ -54,35 +119,17 @@ export class SharedState {
     if (!this.isFavorite(path)) return Promise.resolve();
     return this.change((s) => { s.favorites = s.favorites.filter((p) => p !== path); }, "Update favourites");
   }
-
-  /** Apply `op` locally now, then save it (queued, with conflict retry). */
-  change(op, message) {
-    op(this.data);
-    writeLocal(this.data);
-    this.queue = this.queue.then(() => this.save(op, message)).catch(() => {});
-    return this.queue;
-  }
-
-  async save(op, message) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        this.sha = await this.vault.writeJSON(STATE_PATH, this.data, this.sha, message);
-        return;
-      } catch (e) {
-        if (e.status !== 409 && e.status !== 422) throw e;
-        await this.load();   // someone else changed it: take theirs...
-        op(this.data);       // ...and re-apply ours on top
-      }
-    }
-  }
 }
 
-function readLocal() {
-  try { return JSON.parse(localStorage.getItem(STATE_CACHE)); } catch { return null; }
+function readLocal(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
 }
-function writeLocal(data) {
-  try { localStorage.setItem(STATE_CACHE, JSON.stringify(data)); } catch { /* ignore */ }
+function writeLocal(key, data) {
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch { /* ignore */ }
+}
+function clearLocal(key) {
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 export function clearLocalState() {
-  try { localStorage.removeItem(STATE_CACHE); } catch { /* ignore */ }
+  clearLocal(STATE_CACHE);
 }

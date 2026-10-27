@@ -1,7 +1,7 @@
 {
   "name": "a really helpful tool",
   "short_name": "Helpful",
-  "description": "Your documents on every device",
+  "description": "Your documents and clipboard on every device",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -23,6 +23,33 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Clipboard",
+      "short_name": "Clipboard",
+      "description": "Copy texts and links from your other devices",
+      "url": "./#clipboard",
+      "icons": [
+        {
+          "src": "assets/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "short_name": "Documents",
+      "url": "./#documents",
+      "icons": [
+        {
+          "src": "assets/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ]
 }
