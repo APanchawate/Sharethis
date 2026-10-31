@@ -4,10 +4,18 @@
 //
 //   Contents API  (list, upload, download, delete, small JSON state file)
 //     https://docs.github.com/en/rest/repos/contents
-//   Git Data API  (rename and undo-delete as one atomic commit, no re-upload)
+//   Git Data API  (rename, move to / restore from the trash, purge: each one
+//                  atomic commit that only changes tree entries, no re-upload)
 //     https://docs.github.com/en/rest/git
 
 const API = "https://api.github.com";
+
+function tidyListing(items) {
+  return (Array.isArray(items) ? items : [])
+    .filter((i) => i.type === "file" && i.name !== ".gitkeep")
+    .map(({ name, path, sha, size }) => ({ name, path, sha, size }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+}
 
 export class GitHubError extends Error {
   constructor(status, message) {
@@ -39,7 +47,7 @@ export class Vault {
     return `${this.repoUrl}/contents/${encPath(path)}`;
   }
 
-  async request(url, { method = "GET", body, accept = "application/vnd.github+json" } = {}) {
+  async request(url, { method = "GET", body, accept = "application/vnd.github+json", etag } = {}) {
     const res = await fetch(url, {
       method,
       headers: {
@@ -47,10 +55,12 @@ export class Vault {
         Accept: accept,
         "X-GitHub-Api-Version": "2022-11-28",
         ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(etag ? { "If-None-Match": etag } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
       cache: "no-store",
     });
+    if (res.status === 304) return res; // unchanged (conditional request: free, no rate limit used)
     if (!res.ok) {
       let msg = res.statusText;
       try { msg = (await res.json()).message || msg; } catch { /* not json */ }
@@ -65,6 +75,45 @@ export class Vault {
     return res;
   }
 
+  /**
+   * Like request(), but with XMLHttpRequest so uploads can report progress
+   * (fetch can't). Used for document uploads only. Resolves to the parsed
+   * JSON body; rejects with GitHubError, or a DOMException "AbortError".
+   */
+  send(url, { method, body, onProgress, signal }) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new DOMException("Upload cancelled", "AbortError"));
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, url);
+      xhr.setRequestHeader("Authorization", `Bearer ${this.token}`);
+      xhr.setRequestHeader("Accept", "application/vnd.github+json");
+      xhr.setRequestHeader("X-GitHub-Api-Version", "2022-11-28");
+      xhr.setRequestHeader("Content-Type", "application/json");
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+        xhr.upload.onload = () => onProgress(1, 1); // every byte is out; GitHub is saving now
+      }
+      const onAbort = () => xhr.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const done = () => signal?.removeEventListener("abort", onAbort);
+      xhr.onabort = () => { done(); reject(new DOMException("Upload cancelled", "AbortError")); };
+      xhr.onerror = () => { done(); reject(new TypeError("Network error")); };
+      xhr.onload = () => {
+        done();
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || "{}"); } catch { /* not json */ }
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+        const err = new GitHubError(xhr.status, data.message || xhr.statusText);
+        if ((xhr.status === 403 || xhr.status === 429) && xhr.getResponseHeader("x-ratelimit-remaining") === "0") {
+          err.rateLimited = true;
+          err.resetAt = Number(xhr.getResponseHeader("x-ratelimit-reset")) * 1000 || null;
+        }
+        reject(err);
+      };
+      xhr.send(JSON.stringify(body));
+    });
+  }
+
   /** Checks the token can see the repo. Throws GitHubError otherwise. */
   async check() {
     const repo = await (await this.request(this.repoUrl)).json();
@@ -74,13 +123,33 @@ export class Vault {
 
   /** List documents: [{name, path, sha, size}] sorted by name. */
   async list() {
+    return this.listFolder(this.folder);
+  }
+
+  /**
+   * Has the document list changed since the last call? Uses the listing's
+   * ETag, so a "no" answer costs nothing against the API rate limit.
+   * Returns the new list, or null when nothing changed.
+   */
+  async listIfChanged() {
+    let res;
     try {
-      const res = await this.request(this.url(this.folder));
-      const items = await res.json();
-      return items
-        .filter((i) => i.type === "file" && i.name !== ".gitkeep")
-        .map(({ name, path, sha, size }) => ({ name, path, sha, size }))
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+      res = await this.request(this.url(this.folder), { etag: this.listEtag });
+    } catch (e) {
+      if (e.status === 404) return this.listEtag === "none" ? null : ((this.listEtag = "none"), []);
+      throw e;
+    }
+    if (res.status === 304) return null;
+    this.listEtag = res.headers.get("ETag") || null;
+    return tidyListing(await res.json());
+  }
+
+  /** Files directly in one folder of the vault, sorted by name. Missing folder = []. */
+  async listFolder(folder) {
+    try {
+      const res = await this.request(this.url(folder));
+      if (folder === this.folder) this.listEtag = res.headers.get("ETag") || null;
+      return tidyListing(await res.json());
     } catch (e) {
       if (e.status === 404) return []; // folder not created yet = no files
       throw e;
@@ -97,9 +166,10 @@ export class Vault {
    * Upload a new document. If the name is taken, adds " (2)", " (3)" ...
    * `tag` goes into the commit message so other devices can show where the
    * file came from: "Upload CV.pdf [iPhone, upload]". See organize.parseCommit.
+   * `onProgress(loaded, total)` reports the bytes sent; `signal` cancels.
    * Returns {name, path, sha} of the saved file.
    */
-  async upload(name, base64, tag = "") {
+  async upload(name, base64, tag = "", { onProgress, signal } = {}) {
     const dot = name.lastIndexOf(".");
     const stem = dot > 0 ? name.slice(0, dot) : name;
     const ext = dot > 0 ? name.slice(dot) : "";
@@ -107,11 +177,12 @@ export class Vault {
       const candidate = n === 1 ? name : `${stem} (${n})${ext}`;
       const path = `${this.folder}/${candidate}`;
       try {
-        const res = await this.request(this.url(path), {
+        const data = await this.send(this.url(path), {
           method: "PUT",
           body: { message: `Upload ${candidate}${tag ? ` [${tag}]` : ""}`, content: base64 },
+          onProgress,
+          signal,
         });
-        const data = await res.json().catch(() => ({}));
         return { name: candidate, path, sha: data.content?.sha || null };
       } catch (e) {
         // 422 = file exists (no sha given). Try the next name.
@@ -148,6 +219,68 @@ export class Vault {
   /** Undo a delete: git keeps the old blob, so we just point the path at it again. */
   async restore(path, sha, tag = "") {
     await this.commitTree([{ path, mode: "100644", type: "blob", sha }], `Upload ${path.split("/").pop()}${tag ? ` [${tag}]` : ""}`);
+  }
+
+  /**
+   * Move a document to the trash: one commit that points `trashPath` at the
+   * same blob and removes the document. The commit message keeps the
+   * "Delete <name>" contract, so meta.js and the history read the same.
+   */
+  async moveToTrash(path, sha, trashPath, tag = "") {
+    await this.commitTree(
+      [
+        { path: trashPath, mode: "100644", type: "blob", sha },
+        { path, mode: "100644", type: "blob", sha: null },
+      ],
+      `Delete ${path.split("/").pop()}${tag ? ` [${tag}]` : ""}`
+    );
+  }
+
+  /**
+   * Bring a file back from the trash as <folder>/<name>. The message is
+   * "Restore <name>", which meta.js skips, so the file keeps its original
+   * upload date and device. Returns {name, path, sha}.
+   */
+  async restoreFromTrash(trashPath, sha, name, tag = "") {
+    const path = `${this.folder}/${name}`;
+    await this.commitTree(
+      [
+        { path, mode: "100644", type: "blob", sha },
+        { path: trashPath, mode: "100644", type: "blob", sha: null },
+      ],
+      `Restore ${name}${tag ? ` [${tag}]` : ""}`
+    );
+    return { name, path, sha };
+  }
+
+  /** Move several documents to the trash in one commit. items: [{path, sha, trashPath}] */
+  async moveManyToTrash(items, tag = "") {
+    const n = items.length;
+    await this.commitTree(
+      items.flatMap(({ path, sha, trashPath }) => [
+        { path: trashPath, mode: "100644", type: "blob", sha },
+        { path, mode: "100644", type: "blob", sha: null },
+      ]),
+      n === 1 ? `Delete ${items[0].path.split("/").pop()}${tag ? ` [${tag}]` : ""}` : `Delete ${n} files${tag ? ` [${tag}]` : ""}\n\n${items.map((i) => `Delete ${i.path.split("/").pop()}`).join("\n")}`
+    );
+  }
+
+  /** Bring several files back from the trash in one commit. items: [{trashPath, sha, name}] */
+  async restoreMany(items, tag = "") {
+    await this.commitTree(
+      items.flatMap(({ trashPath, sha, name }) => [
+        { path: `${this.folder}/${name}`, mode: "100644", type: "blob", sha },
+        { path: trashPath, mode: "100644", type: "blob", sha: null },
+      ]),
+      items.length === 1 ? `Restore ${items[0].name}${tag ? ` [${tag}]` : ""}` : `Restore ${items.length} files${tag ? ` [${tag}]` : ""}`
+    );
+    return items.map(({ name, sha }) => ({ name, path: `${this.folder}/${name}`, sha }));
+  }
+
+  /** Remove trash entries for good, all in one commit. */
+  async purge(paths, message) {
+    if (!paths.length) return;
+    await this.commitTree(paths.map((path) => ({ path, mode: "100644", type: "blob", sha: null })), message);
   }
 
   /** Make one commit on the default branch that changes the given tree entries. */

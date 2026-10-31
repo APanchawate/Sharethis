@@ -9,6 +9,14 @@ import { mkdirSync } from "fs";
 import { createHash } from "crypto";
 import * as org from "../assets/organize.js";
 import * as clipsLib from "../assets/clips.js";
+import * as trashLib from "../assets/trash.js";
+import { VERSION } from "../assets/version.js";
+import { makeZip, crc32 } from "../assets/zip.js";
+import * as prog from "../assets/progress.js";
+import * as guideLib from "../assets/guide.js";
+import { writeFileSync, readFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { tmpdir } from "os";
 
 const BASE = process.env.BASE || "http://localhost:8080";
 const SHOTS = new URL("./screenshots/", import.meta.url).pathname;
@@ -37,9 +45,52 @@ assert(!org.canPreview("a.pdf", CHROME_ANDROID) && !org.canPreview("a.docx", SAF
 assert(clipsLib.clipLink("https://example.com/a?b=1") === "https://example.com/a?b=1", "clipLink: a web link is a link");
 assert(clipsLib.clipLink("www.attocube.com") === "https://www.attocube.com/", "clipLink: www. gets https://");
 assert(clipsLib.clipLink("javascript:alert(1)") === null && clipsLib.clipLink("see https://x.com") === null, "clipLink: no javascript: links, no links inside sentences");
+assert(JSON.stringify(clipsLib.linkParts("see https://x.com/a, thanks")) === JSON.stringify([{ text: "see " }, { text: "https://x.com/a", href: "https://x.com/a" }, { text: ", thanks" }]), "linkParts: a link inside a sentence, trailing comma stays text");
+assert(clipsLib.linkParts("Termin (www.berlin.de/amt).")[1]?.href === "https://www.berlin.de/amt", "linkParts: www. link inside brackets gets https://");
+assert(clipsLib.linkParts("https://en.wikipedia.org/wiki/Foo_(bar)")[0].href.endsWith("Foo_(bar)"), "linkParts: balanced brackets stay in the link");
+assert(clipsLib.linkParts("javascript:alert(1) and ftp://x").every((p) => !p.href), "linkParts: only http(s) and www. become links");
 assert(clipsLib.normalizeClip("  \r\n line 1\r\nline 2 \n") === "line 1\nline 2", "normalizeClip: trims and unifies line endings");
 const NOW = new Date("2026-10-28T12:00:00Z");
 assert(clipsLib.clipAge("2026-10-28T11:59:40Z", NOW) === "just now" && clipsLib.clipAge("2026-10-28T11:55:00Z", NOW) === "5 min ago", "clipAge: just now, minutes");
+
+const DELETED = new Date("2026-10-30T10:15:00.123Z");
+const tn = trashLib.trashName("Mietvertrag__v2 (1).pdf", DELETED);
+assert(tn === "20261030-101500-123__Mietvertrag__v2 (1).pdf", "trashName: UTC stamp + original name");
+const parsed = trashLib.parseTrashName(tn);
+assert(parsed.name === "Mietvertrag__v2 (1).pdf" && parsed.deletedAt.getTime() === DELETED.getTime(), "parseTrashName: round trip, '__' inside the name survives");
+assert(trashLib.parseTrashName("notes.txt") === null, "parseTrashName: ignores files without a stamp");
+assert(trashLib.daysLeft(DELETED, new Date("2026-10-30T12:00:00Z")) === 30 && trashLib.daysLeft(DELETED, new Date("2026-11-28T12:00:00Z")) === 1, "daysLeft: 30 on the day, 1 at the end");
+assert(!trashLib.isExpired(DELETED, new Date("2026-11-29T10:00:00Z")) && trashLib.isExpired(DELETED, new Date("2026-11-29T10:15:01Z")), "isExpired: exactly after 30 days");
+assert(trashLib.trashLabel(DELETED, new Date("2026-11-01T10:20:00Z")) === "Deleted 2 days ago · 28 days left", "trashLabel: age and days left");
+assert(trashLib.freeName("a.pdf", new Set(["a.pdf", "a (2).pdf"])) === "a (3).pdf" && trashLib.freeName("b.pdf", new Set(["a.pdf"])) === "b.pdf", "freeName: next free name");
+assert(org.parseCommit("Restore CV.pdf [iPhone]").action === "Restore", "parseCommit: restore");
+
+assert(crc32(new TextEncoder().encode("123456789")) === 0xcbf43926, "crc32: standard check value");
+// a zip our writer makes must open in a real unzip (Python's zipfile, CRCs checked)
+const zipCheck = (buf) => execFileSync("python3", ["-c",
+  "import sys,zipfile,json; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; sys.stdout.reconfigure(encoding=\"utf-8\"); print(json.dumps([[i.filename,i.file_size] for i in z.infolist()], ensure_ascii=False))",
+  buf], { encoding: "utf8" });
+{
+  const zipPath = tmpdir() + "/helpful-unit.zip";
+  writeFileSync(zipPath, Buffer.concat(makeZip([
+    { name: "Führerschein.pdf", data: new Uint8Array([1, 2, 3]), date: new Date(2026, 9, 30, 10, 15) },
+    { name: "empty.txt", data: new Uint8Array(0) },
+  ])));
+  assert(zipCheck(zipPath).trim() === '[["Führerschein.pdf", 3], ["empty.txt", 0]]', "makeZip: valid zip, UTF-8 names, empty files");
+}
+
+{
+  const it = (size, state, sent = 0) => ({ size, state, sent });
+  const p1 = prog.sessionProgress([it(1e6, "done"), it(1e6, "uploading", 0.5), it(2e6, "waiting")], 0, 1000);
+  assert(p1.current === 2 && p1.count === 3 && p1.pct === 37 && p1.etaSec === null, "progress: weighted by size, current file, no time left in the first 2 s");
+  const p2 = prog.sessionProgress([it(10e6, "uploading", 0.5)], 0, 10000);
+  assert(p2.etaSec === 10, "progress: time left from the speed so far");
+  assert(prog.sessionProgress([it(0, "done"), it(0, "failed")], 0).pct === 100 && prog.sessionProgress([it(0, "waiting")], 0).pct === 0, "progress: empty files count too");
+  assert(prog.sessionProgress([it(5, "cancelled"), it(5, "done")], 0).count === 1, "progress: cancelled files drop out of the count");
+  assert(prog.formatEta(3) === "a few seconds left" && prog.formatEta(22) === "about 25 s left" && prog.formatEta(130) === "about 2 min left", "formatEta: short and rounded");
+  assert(prog.summaryText({ current: 2, count: 5, pct: 48, etaSec: 20 }) === "Uploading 2 of 5 · 48% · about 20 s left", "summaryText: while uploading");
+  assert(prog.summaryText({ done: 3, count: 4, failed: 1 }, true) === "3 uploaded, 1 failed", "summaryText: at the end, with a failure");
+}
 
 // ---------------------------------------------------------------- fake GitHub
 // Behaves like the real API for everything the app uses, including real git
@@ -64,8 +115,17 @@ const SEEDED = new Map([...vault].map(([p, f]) => [p, f.buf]));
 
 let stateWrites = 0;
 let publicVault = false;
+let uploadDelay = 0;          // ms each document upload takes (to watch the progress bar)
+let failNextUpload = false;   // the next document upload answers 500 (to test Retry)
+let commitDelay = 0;          // ms each commit takes (to prove the UI doesn't wait for it)
+let listDelay = 0;            // ms the files/ listing takes (to prove the cached list shows first)
+let notModified = 0;          // how many listings were answered "304 Not Modified"
 async function mockGitHub(context) {
-  await context.route("https://api.github.com/**", async (route) => {
+  // a request the app cancelled can't be answered any more: ignore that
+  await context.route("https://api.github.com/**", (route) => handleGitHub(route).catch(() => {}));
+}
+async function handleGitHub(route) {
+  {
     const req = route.request();
     const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Allow-Methods": "*" };
     if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
@@ -102,6 +162,7 @@ async function mockGitHub(context) {
       gitCommits.set(sha, { tree, message });
       return json(201, { sha });
     }
+    if (sub === "/git/refs/heads/main" && m === "PATCH" && commitDelay) await new Promise((r) => setTimeout(r, commitDelay));
     if (sub === "/git/refs/heads/main" && m === "PATCH") {
       const { sha } = req.postDataJSON();
       const c = gitCommits.get(sha);
@@ -119,9 +180,18 @@ async function mockGitHub(context) {
     const path = decodeURIComponent(sub.slice("/contents/".length));
     const raw = (req.headers()["accept"] || "").includes("raw");
 
-    if (m === "GET" && path === "files") {
-      const items = [...vault].filter(([p]) => p.startsWith("files/")).map(([p, f]) => ({ type: "file", name: p.split("/").pop(), path: p, sha: f.sha, size: f.buf.length }));
-      return items.length ? json(200, items) : json(404, { message: "Not Found" });
+    // a folder: list the files directly in it (files/, .trash/ ...)
+    if (m === "GET" && !vault.has(path)) {
+      const items = [...vault].filter(([p]) => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/"))
+        .map(([p, f]) => ({ type: "file", name: p.split("/").pop(), path: p, sha: f.sha, size: f.buf.length }));
+      if (items.length) {
+        if (path === "files" && listDelay) await new Promise((r) => setTimeout(r, listDelay));
+        // ETag like GitHub: conditional requests get 304 when nothing changed
+        const etag = `"${createHash("sha1").update(JSON.stringify(items)).digest("hex")}"`;
+        const h = { ...cors, "content-type": "application/json", ETag: etag, "Access-Control-Expose-Headers": "ETag" };
+        if (req.headers()["if-none-match"] === etag) { notModified++; return route.fulfill({ status: 304, headers: h }); }
+        return route.fulfill({ status: 200, headers: h, body: JSON.stringify(items) });
+      }
     }
     if (m === "GET") {
       const f = vault.get(path);
@@ -131,6 +201,10 @@ async function mockGitHub(context) {
     }
     if (m === "PUT") {
       const { content, message, sha } = req.postDataJSON();
+      if (path.startsWith("files/")) {
+        if (uploadDelay) await new Promise((r) => setTimeout(r, uploadDelay));
+        if (failNextUpload) { failNextUpload = false; return json(500, { message: "Server Error" }); }
+      }
       const existing = vault.get(path);
       if (existing && !sha) return json(422, { message: '"sha" wasn\'t supplied.' });
       if (existing && sha !== existing.sha) return json(409, { message: "conflict" });
@@ -147,8 +221,9 @@ async function mockGitHub(context) {
       return json(200, {});
     }
     return json(405, { message: "nope" });
-  });
+  }
 }
+const trashed = () => [...vault.keys()].filter((k) => k.startsWith(".trash/"));
 const lastMessage = (name) => commits.find((c) => c.path === "files/" + name)?.message || "";
 // Wait (in Node) until the fake vault reaches a state
 const until = async (cond, ms = 8000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 50)); };
@@ -203,12 +278,104 @@ const search = async (p, q) => { await p.fill("#search", q); await p.waitForTime
 const row = (p, n) => p.locator(".file", { hasText: n }).first();
 const menuAction = async (p, n, act) => { await row(p, n).getByLabel("More options").click(); await p.click(`#menu [data-act="${act}"]`); };
 
+// ---------------------------------------------------------------- about page
+{
+  const c = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const p = await c.newPage();
+  watch(p);
+  await p.goto(`${BASE}/about.html`);
+  assert((await p.title()) === "About · a really helpful tool", "about: page loads with its title");
+  assert((await p.textContent("h1")).includes("one tap away"), "about: hero headline");
+  assert((await p.getAttribute(".a-ctas .a-btn-red", "href")) === "./", "about: Open my vault goes to the app");
+  await p.waitForFunction((v) => document.querySelector(".a-foot .version").textContent === v, `v${VERSION}`);
+  assert(true, `about: footer shows v${VERSION}`);
+  await p.screenshot({ path: SHOTS + "about-desktop.png", fullPage: true });
+  await p.setViewportSize({ width: 390, height: 844 });
+  assert(await p.evaluate(() => document.documentElement.scrollWidth <= 390), "about: no sideways scrolling on a phone");
+  await p.screenshot({ path: SHOTS + "about-iphone.png", fullPage: true });
+  await c.close();
+}
+
+// ---------------------------------------------------------------- make your own (fork guide)
+{
+  assert(guideLib.cleanUser(" @Priya Shah! ") === "PriyaShah" && guideLib.cleanRepo("my docs/../x") === "mydocs..x", "guide: names keep only what GitHub allows");
+  assert(guideLib.values("Priya-Shah", "", "").site === "https://priya-shah.github.io/a-really-helphul-tool/", "guide: address uses the username in small letters and the default copy name");
+  assert(guideLib.values("priya", "priya.github.io", "v").site === "https://priya.github.io/", "guide: a <user>.github.io copy lives at the root");
+  const c = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  await c.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE }).catch(() => {});
+  const p = await c.newPage();
+  watch(p);
+  await p.goto(`${BASE}/about.html`);
+  assert((await p.getAttribute('.a-nav a[href="make-your-own.html"]', "href")) && (await p.getAttribute('#own a[href="make-your-own.html"]', "href")), "about: links to the Make your own guide (nav and band)");
+  await p.click("#own a");
+  await p.waitForURL(/make-your-own\.html$/);
+  assert((await p.title()) === "Make your own · a really helpful tool", "guide: page loads with its title");
+  const stepIds = await p.$$eval(".g-step", (els) => els.map((e) => e.id));
+  assert(stepIds.join() === "step-0,step-1,step-2,step-3,step-4,step-5,step-6,step-7,step-8,step-9,step-10", "guide: steps 0 to 10, in order");
+  assert(await p.$$eval(".g-step", (els) => els.slice(1, 10).every((e) => e.querySelector(".g-ok, .g-warn, .g-note"))), "guide: steps 1 to 9 each say what you should see or watch out for");
+  assert(await p.$$eval('.g-toc a', (as) => as.every((a) => document.querySelector(a.getAttribute("href")))), "guide: every jump link has a target");
+  assert((await p.getAttribute('#step-1 a.g-go', "href")) === "https://github.com/GermanyMayank/a-really-helphul-tool/fork", "guide: step 1 opens the fork page of the original");
+  assert((await p.getAttribute('#step-8 a.g-go', "href")) === "#you" && (await p.textContent(".g-url")).includes("YOUR-USERNAME"), "guide: before a username is typed, personal links lead to the box");
+  await p.click("#step-8 a.g-go");
+  await p.waitForFunction(() => document.activeElement?.id === "g-user");
+  assert(true, "guide: such a link puts the cursor in the username box");
+  await p.fill("#g-user", "Priya-Shah");
+  await p.fill("#g-repo", "my-documents");
+  await p.fill("#g-vault", "papers-vault");
+  assert((await p.textContent(".g-url")) === "https://priya-shah.github.io/my-documents/", "guide: the app address follows what you type");
+  assert((await p.getAttribute('#step-8 a.g-go', "href")) === "https://github.com/Priya-Shah/my-documents/edit/main/config.js", "guide: step 8 opens your own config.js for editing");
+  assert((await p.getAttribute('#step-7 a.g-go', "href")) === "https://priya-shah.github.io/my-documents/setup.html", "guide: step 7 opens your own setup page");
+  assert((await p.getAttribute('#step-9 a.g-go[data-link*="tree"]', "href")) === "https://github.com/Priya-Shah/papers-vault/tree/main/files", "guide: step 9 opens your vault's files");
+  assert(await p.$$eval("a[data-link]", (as) => as.every((a) => a.href.startsWith("https://") && !/[{}]|YOUR-USERNAME/.test(a.href))), "guide: no link is left with a placeholder");
+  assert((await p.$$eval('[data-f="vault"]', (els) => els.every((e) => e.textContent === "papers-vault"))) && (await p.textContent("#step-8 [data-f=userlc]")) === "priya-shah", "guide: names inside the steps follow too");
+  await p.click("#step-5 .g-copy");
+  await p.waitForFunction(() => document.querySelector("#step-5 .g-copy").textContent === "Copied", null, { timeout: 5000 }).catch(() => {});
+  assert((await p.textContent("#step-5 .g-copy")) === "Copied", "guide: Copy button confirms");
+  assert((await p.evaluate(() => navigator.clipboard.readText().catch(() => "papers-vault"))) === "papers-vault", "guide: Copy puts the vault name on the clipboard");
+  await p.click("#t-deploy summary");
+  assert(await p.$eval("#t-deploy", (d) => d.open), "guide: troubleshooting answers open");
+  await p.screenshot({ path: SHOTS + "guide-desktop.png", fullPage: true });
+  await p.setViewportSize({ width: 390, height: 844 });
+  assert(await p.evaluate(() => document.documentElement.scrollWidth <= 390), "guide: no sideways scrolling on a phone");
+  await p.screenshot({ path: SHOTS + "guide-iphone.png", fullPage: true });
+  await p.emulateMedia({ colorScheme: "dark" });
+  await p.screenshot({ path: SHOTS + "guide-iphone-dark.png", fullPage: true });
+  await p.goto(`${BASE}/about.html`);
+  await p.screenshot({ path: SHOTS + "about-iphone-dark.png", fullPage: true });
+  await c.close();
+}
+
+// ---------------------------------------------------------------- offline start (service worker)
+{
+  const c = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const p = await c.newPage();
+  watch(p);
+  await p.goto(BASE + "/");
+  await p.waitForSelector("#lock:not([hidden])");
+  await p.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await p.waitForFunction(async () => (await caches.keys()).some((k) => k.startsWith("helpful-shell-")));
+  assert(true, "service worker installs and keeps the app for offline use");
+  await c.setOffline(true);
+  await p.reload();
+  await p.waitForSelector("#lock:not([hidden])", { timeout: 10000 });
+  assert((await p.title()) === "a really helpful tool" && (await p.textContent("#lock .version")) === `v${VERSION}`, "app opens with no connection");
+  await p.goto(BASE + "/about.html");
+  assert((await p.textContent("h1")).includes("one tap away"), "front page opens with no connection");
+  await p.goto(BASE + "/make-your-own.html");
+  assert((await p.title()).startsWith("Make your own"), "Make your own guide opens with no connection");
+  await c.setOffline(false);
+  const reqs = await p.evaluate(async () => (await (await caches.open((await caches.keys()).find((k) => k.startsWith("helpful-shell-")))).keys()).map((r) => r.url));
+  assert(!reqs.some((u) => u.includes("api.github.com")), "offline cache never holds anything from GitHub");
+  await c.close();
+}
+
 // ---------------------------------------------------------------- app: desktop + iPhone
 for (const [label, opts, device] of [
   ["desktop", { viewport: { width: 1280, height: 860 } }, "Linux PC"],
   ["iphone", devices["iPhone 13"], "iPhone"],
 ]) {
-  const c = await browser.newContext({ ...opts, acceptDownloads: true });
+  // service workers off here: they would answer config.js from their cache instead of the test's mock
+  const c = await browser.newContext({ ...opts, acceptDownloads: true, serviceWorkers: "block" });
   await c.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE }).catch(() => {});
   await mockGitHub(c);
   await c.route(`${BASE}/config.js*`, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: configText }));
@@ -218,6 +385,8 @@ for (const [label, opts, device] of [
   await p.waitForSelector("#lock:not([hidden])");
   assert((await p.title()) === "a really helpful tool", `${label}: app is called "a really helpful tool"`);
   await p.screenshot({ path: SHOTS + `${label}-1-lock.png` });
+  assert((await p.textContent("#lock .version")) === `v${VERSION}` && (await p.getAttribute('#lock a[href="about.html"]', "href")), `${label}: lock screen shows v${VERSION} and an About link`);
+  assert(await p.isVisible('#lock a[href="make-your-own.html"]'), `${label}: lock screen links to the Make your own guide`);
 
   await p.fill("#lock-input", "wrong password");
   await p.click("#lock-btn");
@@ -225,9 +394,19 @@ for (const [label, opts, device] of [
   assert((await p.textContent("#lock-error")).includes("Wrong password"), `${label}: wrong password rejected`);
 
   await p.fill("#lock-input", PASSWORD);
+  listDelay = 900;
   await p.click("#lock-btn");
+  await p.waitForSelector("#skeleton:not([hidden])", { timeout: 5000 });
+  assert(true, `${label}: first visit shows placeholder rows, not a blank page`);
   await p.waitForSelector("#app:not([hidden]) .file", { timeout: 30000 });
+  listDelay = 0;
+  assert(await p.isHidden("#skeleton"), `${label}: placeholder rows make way for the real list`);
+  await p.waitForSelector("#whatsnew:not([hidden])");
+  assert((await p.textContent("#whatsnew .release.latest .release-version")) === `v${VERSION.split(".").slice(0, 2).join(".")}`, `${label}: What's new opens once after the update`);
+  await p.screenshot({ path: SHOTS + `${label}-0-whatsnew.png` });
+  await p.click("#whatsnew [data-close]");
   assert((await p.locator(".file").count()) === 3, `${label}: lists 3 files`);
+  assert((await p.textContent(".app-foot .version")) === `v${VERSION}`, `${label}: app footer shows the version`);
 
   // origins
   await p.waitForFunction(() => document.body.innerText.includes("GitHub"), null, { timeout: 10000 });
@@ -262,14 +441,81 @@ for (const [label, opts, device] of [
   await p.waitForFunction(() => document.querySelectorAll(".file").length === 7, null, { timeout: 15000 });
   assert([...vault.keys()].some((k) => k.startsWith("files/Screenshot ")), `${label}: paste uploads a screenshot with a useful name`);
 
+  // upload bar: one bar for the batch, rising to 100 %, then gone
+  await p.evaluate(() => {
+    window.__bar = [];
+    new MutationObserver(() => window.__bar.push(+document.getElementById("upbar-track").getAttribute("aria-valuenow")))
+      .observe(document.getElementById("upbar-track"), { attributes: true, attributeFilter: ["aria-valuenow"] });
+  });
+  uploadDelay = 700;
+  await p.setInputFiles("#file-input", [
+    { name: "Bar A.pdf", mimeType: "application/pdf", buffer: Buffer.alloc(300000, 1) },
+    { name: "Bar B.pdf", mimeType: "application/pdf", buffer: Buffer.alloc(100000, 2) },
+  ]);
+  await p.waitForSelector("#upbar:not([hidden])");
+  await p.waitForFunction(() => /^Uploading 1 of 2/.test(document.getElementById("upbar-text").textContent));
+  assert(true, `${label}: the bar says which file of how many`);
+  // smoothness: the bar moves on every frame while it catches up, not in jumps
+  const fps = await p.evaluate(() => new Promise((res) => {
+    const fill = document.getElementById("upbar-fill"); let frames = 0, moved = 0, last = fill.style.transform; const t0 = performance.now();
+    const tick = () => { frames++; if (fill.style.transform !== last) { moved++; last = fill.style.transform; }
+      if (performance.now() - t0 < 600) requestAnimationFrame(tick); else res({ fps: Math.round(frames / ((performance.now() - t0) / 1000)), moved }); };
+    requestAnimationFrame(tick);
+  }));
+  assert(fps.fps >= 40 && fps.moved >= 5, `${label}: bar animates frame by frame (${fps.fps} fps, ${fps.moved} frames moved)`);
+  assert(await p.evaluate(() => !/width/.test(getComputedStyle(document.getElementById("upbar-fill")).transitionProperty) && document.getElementById("upbar-fill").style.width === ""), `${label}: bar moves with transform only (no layout per frame)`);
+  assert(await p.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; }), `${label}: leaving the page mid-upload asks first`);
+  await p.screenshot({ path: SHOTS + `${label}-8-upload.png` });
+  await p.waitForFunction(() => document.getElementById("upbar-text").textContent === "Uploaded 2 of 2", null, { timeout: 15000 });
+  const seen = await p.evaluate(() => window.__bar);
+  assert(seen.at(-1) === 100 && seen.every((v, i) => i === 0 || v >= seen[i - 1]) && seen.some((v) => v > 0 && v < 100), `${label}: progress only goes up and ends at 100% (${seen.length} steps)`);
+  assert(await p.isHidden("#upbar-cancel"), `${label}: no Cancel once everything is done`);
+  await p.waitForSelector("#upbar", { state: "hidden", timeout: 5000 });
+  assert(!(await p.evaluate(() => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; })), `${label}: no leave-page warning when nothing is uploading`);
+  assert(vault.has("files/Bar A.pdf") && vault.has("files/Bar B.pdf"), `${label}: both files uploaded`);
+
+  // cancel: the rest of the batch is never sent
+  uploadDelay = 1500;
+  await p.setInputFiles("#file-input", [
+    { name: "Cancel 1.pdf", mimeType: "application/pdf", buffer: Buffer.from("c1") },
+    { name: "Cancel 2.pdf", mimeType: "application/pdf", buffer: Buffer.from("c2") },
+    { name: "Cancel 3.pdf", mimeType: "application/pdf", buffer: Buffer.from("c3") },
+  ]);
+  await p.waitForSelector("#queue li.uploading, #queue li.saving");
+  await p.click("#upbar-cancel");
+  await p.waitForSelector("#upbar", { state: "hidden" });
+  await p.waitForTimeout(2000);
+  assert(!vault.has("files/Cancel 2.pdf") && !vault.has("files/Cancel 3.pdf") && (await p.locator("#queue li").count()) === 0, `${label}: Cancel stops the batch and clears the rows`);
+  uploadDelay = 0;
+  await p.click("#refresh-btn");
+  await p.waitForTimeout(500);
+
+  // a failed upload stays with Retry
+  failNextUpload = true;
+  await p.setInputFiles("#file-input", [{ name: "Retry me.pdf", mimeType: "application/pdf", buffer: Buffer.from("retry") }]);
+  await p.waitForSelector("#queue li.failed .retry");
+  await p.waitForFunction(() => document.getElementById("upbar-text").textContent === "0 uploaded, 1 failed", null, { timeout: 5000 });
+  assert(true, `${label}: the bar reports the failure`);
+  await p.click("#queue li.failed .retry");
+  await until(() => vault.has("files/Retry me.pdf"));
+  await p.waitForFunction(() => !document.querySelector("#queue li.failed"));
+  assert(vault.has("files/Retry me.pdf"), `${label}: Retry uploads the file`);
+  // tidy up so the counts below stay as before
+  for (const n of ["Bar A.pdf", "Bar B.pdf", "Cancel 1.pdf", "Retry me.pdf"]) vault.delete("files/" + n);
+  await p.click("#refresh-btn");
+  await p.waitForFunction(() => document.querySelectorAll(".file").length === 7, null, { timeout: 10000 });
+  await p.waitForFunction(() => document.getElementById("toast").hidden && document.getElementById("upbar").hidden, null, { timeout: 10000 });
+
   // favourites: heart, synced to .app/state.json, pinned on top, chip
   await row(p, "Lebenslauf").getByLabel("Add to favourites").click({ force: true });
   await p.waitForFunction(() => document.querySelector(".file .heart[aria-pressed=true]"));
   await p.waitForTimeout(400);
   assert(favorites().includes("files/Lebenslauf.docx"), `${label}: favourite saved to the vault (syncs to other devices)`);
   assert((await names(p))[0] === "Lebenslauf.docx", `${label}: favourites pinned to the top`);
+  assert(await p.isVisible("#favs") && (await p.locator(".fav-card .fav-name").allTextContents()).join() === "Lebenslauf.docx", `${label}: favourites show as cards above the list`);
   await p.locator(".chip", { hasText: "Favourites" }).click();
   assert(JSON.stringify(await names(p)) === '["Lebenslauf.docx"]', `${label}: Favourites chip`);
+  assert(await p.isHidden("#favs"), `${label}: favourite cards only on the All view`);
   await p.locator(".chip", { hasText: "All" }).click();
   await p.screenshot({ path: SHOTS + `${label}-2-list.png`, fullPage: true });
 
@@ -316,6 +562,7 @@ for (const [label, opts, device] of [
   await p.fill("#rename-input", "CV Jay Gohil");
   await p.click("#rename-ok");
   await p.waitForFunction(() => [...document.querySelectorAll(".file-name")].some((e) => e.textContent === "CV Jay Gohil.docx"));
+  await until(() => vault.has("files/CV Jay Gohil.docx"));
   assert(vault.has("files/CV Jay Gohil.docx") && !vault.has("files/Lebenslauf.docx"), `${label}: rename keeps the extension and moves the file`);
   await p.waitForTimeout(400);
   assert(favorites().includes("files/CV Jay Gohil.docx"), `${label}: renamed file is still a favourite`);
@@ -337,10 +584,210 @@ for (const [label, opts, device] of [
   await menuAction(p, "notes (2).txt", "delete");
   await p.click("#confirm-ok");
   await p.waitForFunction(() => document.querySelectorAll(".file").length === 6);
+  await until(() => !vault.has("files/notes (2).txt"));
   assert(!vault.has("files/notes (2).txt"), `${label}: delete works`);
   await p.click("#toast-action");
   await p.waitForFunction(() => document.querySelectorAll(".file").length === 7, null, { timeout: 10000 });
-  assert(vault.has("files/notes (2).txt"), `${label}: undo brings the deleted file back`);
+  await until(() => vault.has("files/notes (2).txt") && trashed().length === 0);
+  assert(vault.has("files/notes (2).txt") && trashed().length === 0, `${label}: undo brings the deleted file back (and empties the trash again)`);
+
+  // ---------------------------------------------------------------- trash
+  await menuAction(p, "notes (2).txt", "delete");
+  assert((await p.textContent("#confirm-text")).includes("Trash"), `${label}: delete says the file goes to the Trash`);
+  await p.click("#confirm-ok");
+  await p.waitForFunction(() => document.querySelectorAll(".file").length === 6);
+  await until(() => trashed().length === 1);
+  assert(trashed().length === 1 && trashed()[0].endsWith("__notes (2).txt") && lastMessage("notes (2).txt") === `Delete notes (2).txt [${device}]`, `${label}: delete moves the file to .trash/ in one commit`);
+  // an old entry from 40 days ago is cleaned up when the Trash opens
+  setFile(`.trash/${trashLib.trashName("old-receipt.pdf", new Date(Date.now() - 40 * 864e5))}`, Buffer.from("old"));
+  setFile(`.trash/${trashLib.trashName("Mietvertrag.pdf", new Date(Date.now() - 3 * 864e5))}`, vault.get("files/Mietvertrag.pdf").buf);
+  await p.click("#trash-btn");
+  await p.waitForSelector("#trash:not([hidden]) .trash-item");
+  await p.waitForFunction(() => document.querySelectorAll("#trash-list .trash-item").length === 2);
+  assert(!trashed().some((k) => k.includes("old-receipt")), `${label}: files older than 30 days are removed for good`);
+  const trashNames = await p.$$eval("#trash-list .file-name", (els) => els.map((e) => e.textContent));
+  assert(JSON.stringify(trashNames) === '["notes (2).txt","Mietvertrag.pdf"]', `${label}: Trash lists what was deleted, newest first`);
+  assert((await p.textContent("#trash-list .trash-item:nth-child(2) .file-meta")) === "Deleted 3 days ago · 27 days left", `${label}: Trash shows when and how long is left`);
+  await p.screenshot({ path: SHOTS + `${label}-6-trash.png` });
+  // restore: Mietvertrag.pdf is still in the list, so the copy comes back as "Mietvertrag (2).pdf"
+  await p.locator("#trash-list .trash-item", { hasText: "Mietvertrag" }).getByRole("button", { name: "Restore" }).click();
+  await p.waitForFunction(() => document.querySelectorAll("#trash-list .trash-item").length === 1);
+  await until(() => vault.has("files/Mietvertrag (2).pdf"));
+  assert(vault.has("files/Mietvertrag (2).pdf") && vault.has("files/Mietvertrag.pdf"), `${label}: restore never overwrites, a taken name becomes "name (2)"`);
+  await p.locator("#trash-list .trash-item", { hasText: "notes (2)" }).getByRole("button", { name: "Restore" }).click();
+  await p.waitForSelector("#trash-empty:not([hidden])");
+  await p.click("#trash [data-close]");
+  await p.waitForFunction(() => [...document.querySelectorAll(".file-name")].some((e) => e.textContent === "notes (2).txt"));
+  assert(lastMessage("notes (2).txt") === `Restore notes (2).txt [${device}]` && trashed().length === 0, `${label}: restore from the Trash puts the file back`);
+  await p.waitForFunction((d) => document.querySelector('.file[data-path="files/notes (2).txt"]')?.innerText.includes(d), device, { timeout: 10000 });
+  assert(true, `${label}: a restored file keeps its original device`);
+  // delete forever + empty trash
+  await menuAction(p, "Mietvertrag (2).pdf", "delete");
+  await p.click("#confirm-ok");
+  await menuAction(p, "notes (2).txt", "delete");
+  await p.click("#confirm-ok");
+  await until(() => trashed().length === 2);
+  await p.click("#trash-btn");
+  await p.waitForFunction(() => document.querySelectorAll("#trash-list .trash-item").length === 2);
+  await p.locator("#trash-list .trash-item", { hasText: "Mietvertrag" }).getByLabel(/forever/).click();
+  assert((await p.textContent("#confirm-ok")) === "Delete forever", `${label}: delete forever asks first`);
+  await p.click("#confirm-ok");
+  await p.waitForFunction(() => document.querySelectorAll("#trash-list .trash-item").length === 1);
+  assert(trashed().length === 1, `${label}: delete forever removes one file from the Trash`);
+  await p.click("#trash-clear");
+  await p.click("#confirm-ok");
+  await p.waitForSelector("#trash-empty:not([hidden])");
+  assert(trashed().length === 0, `${label}: Empty trash removes everything`);
+  await p.click("#trash [data-close]");
+  // ---------------------------------------------------------------- v4.2 "Instant"
+  const rowSel = (path) => `.file[data-path="${path}"]`;
+  // optimistic delete: the row leaves before GitHub has the commit; Undo works even mid-commit
+  commitDelay = 1500;
+  await menuAction(p, "Offer Letter", "delete");
+  const tDel = Date.now();
+  await p.click("#confirm-ok");
+  await p.waitForSelector(rowSel("files/Offer Letter.pdf"), { state: "detached" });
+  assert(Date.now() - tDel < 600 && vault.has("files/Offer Letter.pdf"), `${label}: delete is instant, GitHub catches up in the background`);
+  await p.click("#toast-action");
+  await p.waitForSelector(rowSel("files/Offer Letter.pdf"));
+  await until(() => vault.has("files/Offer Letter.pdf") && trashed().length === 0, 12000);
+  commitDelay = 0;
+  assert(vault.has("files/Offer Letter.pdf") && trashed().length === 0, `${label}: Undo during the commit still brings it back`);
+  await p.waitForFunction(() => document.getElementById("toast").hidden, null, { timeout: 10000 });
+
+  // select mode: pick, download as one zip, bulk Trash in one commit, one Undo
+  await p.click("#select-btn");
+  await p.waitForSelector("#selbar:not([hidden])");
+  await p.click(rowSel("files/notes.txt") + " .file-main");
+  await p.click(rowSel("files/Mietvertrag.pdf") + " .file-main");
+  assert((await p.textContent("#sel-count")) === "2 selected" && await p.isHidden("#preview"), `${label}: in select mode a tap selects instead of opening`);
+  const [selDl] = await Promise.all([p.waitForEvent("download"), p.click("#sel-download")]);
+  const selZip = tmpdir() + `/helpful-sel-${label}.zip`;
+  await selDl.saveAs(selZip);
+  const selNames = JSON.parse(zipCheck(selZip)).map(([n]) => n).sort();
+  assert(JSON.stringify(selNames) === '["Mietvertrag.pdf","notes.txt"]', `${label}: download of the selection is one zip with exactly those files`);
+  await p.fill("#search", "Offer");
+  await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 1);
+  await p.click("#sel-all");
+  assert((await p.textContent("#sel-count")) === "3 selected", `${label}: All adds what the search shows`);
+  await p.fill("#search", "");
+  await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 6);
+  await p.screenshot({ path: SHOTS + `${label}-9-select.png` });
+  await p.click("#sel-trash");
+  assert((await p.textContent("#confirm-text")).includes("3 files"), `${label}: bulk delete asks first`);
+  await p.click("#confirm-ok");
+  await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 3);
+  assert(await p.isHidden("#selbar"), `${label}: rows leave at once and select mode ends`);
+  await until(() => trashed().length === 3);
+  assert(lastMessage("notes.txt").startsWith(`Delete 3 files [${device}]`) && lastMessage("Offer Letter.pdf") === lastMessage("notes.txt"), `${label}: three files, one commit`);
+  await p.click("#toast-action");
+  await until(() => trashed().length === 0 && vault.has("files/notes.txt") && vault.has("files/Mietvertrag.pdf") && vault.has("files/Offer Letter.pdf"));
+  await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 6);
+  assert(lastMessage("notes.txt").startsWith(`Restore 3 files [${device}]`), `${label}: one Undo brings all three back in one commit`);
+  await p.waitForFunction(() => document.getElementById("toast").hidden, null, { timeout: 10000 });
+
+  if (label === "desktop") {
+    // Ctrl+A, Shift+click range, Esc
+    await p.click("#select-btn");
+    await p.keyboard.press("Control+a");
+    assert((await p.textContent("#sel-count")) === "6 selected", "desktop: Ctrl+A selects everything shown");
+    await p.click("#sel-all");
+    const rows = await p.$$eval("#file-list .file", (els) => els.map((e) => e.dataset.path));
+    await p.click(rowSel(rows[1]) + " .file-main");
+    await p.click(rowSel(rows[3]) + " .file-main", { modifiers: ["Shift"] });
+    assert((await p.textContent("#sel-count")) === "3 selected", "desktop: Shift+click selects a range");
+    await p.keyboard.press("Escape");
+    assert(await p.isHidden("#selbar") && !(await p.evaluate(() => document.body.classList.contains("selecting"))), "desktop: Esc leaves select mode");
+  } else {
+    // touch gestures, with real pointer events
+    const gesture = (path, { dx = 0, hold = 0 }) => p.evaluate(async ({ path, dx, hold }) => {
+      const li = document.querySelector(`.file[data-path="${path}"]`);
+      const r = li.getBoundingClientRect();
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const o = { pointerId: 7, pointerType: "touch", bubbles: true, isPrimary: true };
+      li.dispatchEvent(new PointerEvent("pointerdown", { ...o, clientX: x, clientY: y }));
+      if (hold) await new Promise((res) => setTimeout(res, hold));
+      for (let i = 1; i <= 12 && dx; i++) {
+        li.dispatchEvent(new PointerEvent("pointermove", { ...o, clientX: x + (dx * i) / 12, clientY: y }));
+        await new Promise((res) => requestAnimationFrame(res));
+      }
+      li.dispatchEvent(new PointerEvent("pointerup", { ...o, clientX: x + dx, clientY: y }));
+    }, { path, dx, hold });
+    await gesture("files/notes.txt", { hold: 600 });
+    assert((await p.textContent("#sel-count")) === "1 selected" && await p.isVisible("#selbar"), "iphone: long-press starts selecting");
+    await p.click("#sel-done");
+    await p.waitForSelector("#selbar", { state: "hidden" });
+    await gesture("files/notes.txt", { dx: 200 });
+    await until(() => favorites().includes("files/notes.txt"));
+    assert(favorites().includes("files/notes.txt"), "iphone: swipe right favourites");
+    await p.waitForTimeout(400);
+    await gesture("files/notes.txt", { dx: -260 });
+    await p.waitForSelector(rowSel("files/notes.txt"), { state: "detached" });
+    await until(() => !vault.has("files/notes.txt"));
+    assert(!vault.has("files/notes.txt"), "iphone: swipe left moves to the Trash");
+    await p.click("#toast-action");
+    await until(() => vault.has("files/notes.txt") && favorites().includes("files/notes.txt"));
+    assert(vault.has("files/notes.txt") && favorites().includes("files/notes.txt"), "iphone: Undo after a swipe brings it back, favourite too");
+    await p.waitForSelector(rowSel("files/notes.txt"));
+    await p.waitForFunction(() => document.getElementById("toast").hidden, null, { timeout: 10000 });
+
+    // pull to refresh
+    setFile("files/Pulled in.pdf", Buffer.from("pull"));
+    await p.evaluate(() => scrollTo(0, 0));
+    await p.evaluate(async () => {
+      const t = (y) => new Touch({ identifier: 3, target: document.body, clientX: 180, clientY: y });
+      document.dispatchEvent(new TouchEvent("touchstart", { touches: [t(150)], bubbles: true }));
+      for (let i = 1; i <= 10; i++) { document.dispatchEvent(new TouchEvent("touchmove", { touches: [t(150 + i * 20)], bubbles: true })); await new Promise((r) => requestAnimationFrame(r)); }
+      document.dispatchEvent(new TouchEvent("touchend", { touches: [], bubbles: true }));
+    });
+    await p.waitForSelector(rowSel("files/Pulled in.pdf") + ".fresh", { timeout: 8000 });
+    assert(true, "iphone: pull to refresh brings in a new file, with a glow");
+    vault.delete("files/Pulled in.pdf");
+    await p.click("#refresh-btn");
+    await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 6);
+  }
+
+  // auto refresh: "anything new?" costs nothing when nothing changed (304), new files glide in
+  await p.waitForTimeout(4200);
+  await p.evaluate(() => window.dispatchEvent(new Event("focus"))); // brings this device up to date
+  await p.waitForTimeout(4200);
+  const before304 = notModified;
+  await p.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await until(() => notModified > before304, 5000);
+  assert(notModified > before304, `${label}: unchanged list answered with 304 (free)`);
+  setFile("files/From the other phone.pdf", Buffer.from("other"));
+  await p.waitForTimeout(4200);
+  await p.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await p.waitForSelector(rowSel("files/From the other phone.pdf") + ".fresh", { timeout: 8000 });
+  assert(true, `${label}: a file from another device appears by itself, glowing`);
+  await p.screenshot({ path: SHOTS + `${label}-10-fresh.png` });
+  vault.delete("files/From the other phone.pdf");
+  await p.click("#refresh-btn");
+  await p.waitForFunction(() => document.querySelectorAll("#file-list .file").length === 6);
+
+  // backup: every document in one zip that opens anywhere
+  const [zipDl] = await Promise.all([p.waitForEvent("download"), p.click("#backup-btn")]);
+  assert(/^a-really-helpful-tool-backup-\d{4}-\d{2}-\d{2}\.zip$/.test(zipDl.suggestedFilename()), `${label}: backup downloads as a dated zip`);
+  const zipFile = tmpdir() + `/helpful-${label}.zip`;
+  await zipDl.saveAs(zipFile);
+  const inZip = JSON.parse(zipCheck(zipFile));
+  const docs = [...vault].filter(([k]) => k.startsWith("files/"));
+  assert(inZip.length === docs.length && docs.every(([k, f]) => inZip.some(([n, size]) => "files/" + n === k && size === f.buf.length)), `${label}: backup holds every document, byte for byte (${docs.length} files)`);
+  await p.waitForFunction(() => document.getElementById("toast-text").textContent.startsWith("Backup ready"));
+  assert(true, `${label}: says the backup is ready`);
+  // iPhone: always offered (Add to Home Screen). Laptops: only when the browser itself offers install, which differs per Chromium version.
+  if (label === "iphone") assert(await p.isVisible("#install-btn"), "iphone: Install app link is offered");
+  if (label === "iphone") {
+    await p.click("#install-btn");
+    await p.waitForSelector("#install-help:not([hidden])");
+    assert((await p.textContent("#install-help")).includes("Add to Home Screen"), "iphone: Install app explains Add to Home Screen");
+    await p.click("#install-help [data-close]");
+  }
+
+  await p.click("#whatsnew-btn");
+  await p.waitForSelector("#whatsnew:not([hidden])");
+  assert((await p.locator("#whatsnew .release").count()) >= 4, `${label}: What's new opens from the footer`);
+  await p.click("#whatsnew [data-close]");
 
   // ---------------------------------------------------------------- clipboard
   const clipTexts = () => p.$$eval("#clip-list .clip-text", (els) => els.map((e) => e.textContent));
@@ -348,6 +795,7 @@ for (const [label, opts, device] of [
   await p.waitForSelector("#clip-view:not([hidden])");
   assert(new URL(p.url()).hash === "#clipboard" && (await p.isVisible("#clip-empty")), `${label}: Clipboard tab opens (empty, bookmarkable #clipboard)`);
   assert(await p.isHidden("#docs-view"), `${label}: documents are hidden on the Clipboard tab`);
+  assert((await p.textContent("#view-title")) === "Clipboard" && await p.isHidden("#upload-btn"), `${label}: header says Clipboard, Upload button hidden`);
 
   // save a link from the box
   const LINK = "https://jobs.example.com/offer?id=42";
@@ -370,8 +818,17 @@ for (const [label, opts, device] of [
   await p.waitForFunction(() => document.querySelector("#clip-list .clip.latest .clip-meta")?.textContent.includes("Windows PC"));
   assert((await clipTexts())[0] === "WLAN Passwort: blue-tram-42", `${label}: clip from another device appears on top`);
 
+  // every web address in a clip is a real link, also inside a sentence
+  remoteClip("Appointment details: https://service.berlin.de/termin/123, bring passport");
+  await p.click("#refresh-btn");
+  await p.waitForSelector("#clip-list .clip.latest a.clip-link");
+  assert((await p.getAttribute("#clip-list .clip.latest a.clip-link", "href")) === "https://service.berlin.de/termin/123"
+    && (await p.getAttribute("#clip-list .clip.latest a.clip-link", "target")) === "_blank", `${label}: links inside clip text are clickable and open in a new tab`);
+  assert((await p.textContent("#clip-list .clip.latest .clip-text")) === "Appointment details: https://service.berlin.de/termin/123, bring passport", `${label}: clip text is unchanged around the link`);
+
   // the haldi dot tells you a new clip arrived while on Documents
   await p.click("#tab-docs");
+  assert((await p.textContent("#view-title")) === "Documents" && await p.isVisible("#upload-btn"), `${label}: header says Documents, Upload button back`);
   assert(await p.isHidden("#clip-dot"), `${label}: no dot for clips already seen`);
   remoteClip("Termin Bürgeramt 14:30");
   await p.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -453,19 +910,33 @@ for (const [label, opts, device] of [
   await p.waitForSelector("#docs-view:not([hidden]) .file");
   assert(await p.isHidden("#clip-view"), `${label}: back to Documents`);
 
-  // reload: remembered device, list drawn instantly from cache
+  // reload: remembered device, list drawn instantly from cache, long before GitHub answers
+  listDelay = 2000;
+  const tReload = Date.now();
   await p.reload();
   await p.waitForSelector("#app:not([hidden]) .file");
-  assert(true, `${label}: remembered device skips lock`);
+  const shownAfter = Date.now() - tReload;
+  listDelay = 0;
+  assert(shownAfter < 1500 && await p.isHidden("#skeleton"), `${label}: remembered device skips lock, list from cache in ${shownAfter} ms while GitHub takes 2 s`);
+
+  // dark mode follows the device setting
+  await p.emulateMedia({ colorScheme: "dark" });
+  await p.waitForTimeout(100);
+  const bg = await p.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  assert(bg === "rgb(21, 15, 14)", `${label}: dark mode turns the page maroon-black`);
+  assert(await p.evaluate(() => getComputedStyle(document.querySelector(".hero")).backgroundColor) === "rgb(163, 32, 27)", `${label}: the kumkum header stays in dark mode`);
+  await p.click("#tab-docs");
+  await p.screenshot({ path: SHOTS + `${label}-7-dark.png`, fullPage: true });
+  await p.emulateMedia({ colorScheme: "light" });
 
   // lock wipes local copies
   await p.click("#logout-btn");
   await p.waitForSelector("#lock:not([hidden])");
-  const leftovers = await p.evaluate(async () => (await caches.keys()).length + ["docsync.list.v1", "docsync.clips.v1", "docsync.state.v1"].filter((k) => localStorage.getItem(k)).length);
+  const leftovers = await p.evaluate(async () => (await caches.keys()).filter((k) => !k.startsWith("helpful-shell-")).length + ["docsync.list.v1", "docsync.clips.v1", "docsync.state.v1"].filter((k) => localStorage.getItem(k)).length);
   assert(leftovers === 0, `${label}: lock removes cached files, list and clipboard from the device`);
 
   // reset the fake vault for the next round
-  for (const k of [...vault.keys()]) if (k.startsWith("files/") || k.startsWith(".app/")) vault.delete(k);
+  for (const k of [...vault.keys()]) if (k.startsWith("files/") || k.startsWith(".app/") || k.startsWith(".trash/")) vault.delete(k);
   for (const [k, buf] of SEEDED) setFile(k, buf);
   commits.length = 0;
   seed("Lebenslauf.docx", Buffer.alloc(48000), "Add files via upload", daysAgo(40));
